@@ -1,0 +1,21 @@
+# Generate the password hash with:
+#   printf '%s\n' 'a unique password of at least 12 characters' | parade-hub hash-password
+
+[hub]
+listen = "127.0.0.1:8008"
+database_path = "/var/lib/parade/parade.sqlite3"
+public_url = "https://parade.example.com"
+dist_dir = "/var/lib/parade-dist"
+# SHA-256 of the offline Ed25519 public-key PEM staged as release-public.pem.
+release_public_key_sha256 = "REPLACE_WITH_64_HEX_CHARACTERS"
+trusted_proxies = ["127.0.0.1", "::1"]
+secure_cookies = true
+session_hours = 12
+stale_after_secs = 600
+offline_after_secs = 1800
+
+[dashboard]
+title = "Parade"
+# Example only and intentionally invalid: startup refuses it. Never commit a
+# real password hash; replace locally with the command output above.
+password_hash = "REPLACE_WITH_ARGON2ID_HASH"

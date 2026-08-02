@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{TITLE}} · sign in</title>
+    <link rel="stylesheet" href="/app.css" />
+    <link rel="stylesheet" href="/login.css" />
+  </head>
+  <body class="login-page">
+    <main class="login-card">
+      <div class="brand-mark" aria-hidden="true">P</div>
+      <p class="eyebrow">Read-only fleet observability</p>
+      <h1>{{TITLE}}</h1>
+      <p>Sign in to inspect accepted telemetry and administer Hub-side metadata.</p>
+      <form id="login-form" class="form">
+        <label for="password">Administrator password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" minlength="12" required autofocus />
+        <button class="primary" type="submit">Sign in</button>
+      </form>
+      <p id="login-message" class="notice" role="status" aria-live="polite">Monitored servers remain observation-only.</p>
+    </main>
+    <script type="module" src="/login.js"></script>
+  </body>
+</html>

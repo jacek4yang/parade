@@ -1,0 +1,36 @@
+[Unit]
+Description=Parade fleet observability Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=parade-hub
+Group=parade-hub
+ExecStart=/usr/local/bin/parade-hub /etc/parade/hub.toml
+Restart=on-failure
+RestartSec=5s
+StateDirectory=parade
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/parade
+ReadOnlyPaths=/var/lib/parade-dist
+
+[Install]
+WantedBy=multi-user.target

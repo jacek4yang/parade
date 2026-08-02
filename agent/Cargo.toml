@@ -1,0 +1,32 @@
+[package]
+name = "parade-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# No C library, no metrics framework, no async runtime. Metrics come from the
+# kernel's /proc + /sys pseudo-filesystems and a raw statfs(2) syscall (see
+# src/syscall.rs), giving the smallest possible binary, the widest kernel
+# compatibility, and zero libc dependency in the collection path.
+#
+# TLS is optional (feature "tls"):
+#   • default (no TLS): tiny binary, pure-Rust, trivial to cross-compile to any
+#     architecture — talk HTTP to the hub (typically behind nginx on the same
+#     host, or over a private network). This is the recommended setup.
+#   • --features tls: adds rustls so the agent can reach an https:// hub
+#     directly. Pulls in `ring` (C/asm), so cross-compiling then needs a C
+#     toolchain (use `cross`).
+[features]
+default = ["tls"]
+tls = ["ureq/tls"]
+
+[dependencies]
+parade-common = { path = "../common" }
+# no default features ⇒ no TLS/ring unless the `tls` feature is enabled
+ureq = { version = "2.9", default-features = false, features = ["json", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+ed25519-dalek = "2"
+getrandom = "0.2"
+postcard = { version = "1", features = ["alloc"] }
