@@ -16,11 +16,14 @@ authentication is valid for that account with `repo` scope and SSH Git access.
 
 The empty remote was bootstrapped without developing on the default branch:
 commit `1d48c80` contains no project files and is the sole `main` baseline.
-All project work is on `codex/read-only-vps-observability`. The reviewed local
+All project work is on `codex/read-only-vps-observability`. The reviewed and
+pushed
 milestones are `23ba6a7` (specifications and architecture), `ea1d612` (signed
 telemetry and traffic accounting), `4921d65` (embedded UI), and `73b55fb`
-(deployment and CI). Final ledger/PR material is being prepared before the
-feature branch is pushed and the draft PR is opened; nothing will be merged.
+(deployment and CI), followed by `eda03da` (verification and delivery notes).
+Draft PR [#1](https://github.com/jacek4yang/parade/pull/1) is open against
+`main`; its base/head and draft/open state were read back through GitHub. Nothing
+was merged.
 
 ## Product invariants
 
@@ -55,7 +58,7 @@ feature branch is pushed and the draft PR is opened; nothing will be merged.
 | 5 | Resource/process/network collection and evidence findings | Completed vertical slice with fixture-root tests, privacy limits, interface/listener evidence, stable findings, and coverage caveats |
 | 6 | Embedded Preact UI | Completed required routes, aggregate fleet lenses, dark/light/density/mobile states, temporary lease UX, and traffic workflows |
 | 7 | Installer, artifact trust, services, proxy, CI, bandwidth/load/browser tests | Completed locally; cross-architecture release publication needs an operator-held offline signing key |
-| 8 | Diff review, commits, push, draft PR | File/security review and coherent local milestone commits completed; feature-branch push and draft PR creation are in progress |
+| 8 | Diff review, commits, push, draft PR | Completed; clean diff/secret/boundary review, coherent commits, feature-branch push, and verified open draft PR #1; nothing merged |
 
 Independent read-heavy reviews were performed by architecture, security, and
 UI/test subagents. Their high-severity findings (interface-policy enforcement,
@@ -98,7 +101,11 @@ Only commands that actually ran are recorded as passed.
 | final `gh auth status` | Passed | Active `jacek4yang`, SSH Git protocol, `repo` scope present |
 | `gh repo view jacek4yang/parade ...` | Passed | Exact intended public repository exists, was empty, and grants `ADMIN`; SSH origin verified |
 | final Git state verification | Passed | `origin` is `git@github.com:jacek4yang/parade.git`; empty `main` baseline; current branch `codex/read-only-vps-observability` |
-| earlier `GH_PROMPT_DISABLED=1 gh pr create --draft ... --body-file PR_BODY.md` | Blocked | Before repository creation it failed with `fatal: not a git repository`; draft creation will be retried after the final feature push |
+| earlier `GH_PROMPT_DISABLED=1 gh pr create --draft ... --body-file PR_BODY.md` | Blocked | Before repository creation it failed with `fatal: not a git repository`; it was retried successfully after the final feature push |
+| `git diff --check origin/main...HEAD`, final secret scan, refined host-control scan, and `git fsck --full` | Passed | Clean worktree/diff and no secret or remote-control candidates; Git objects valid (one harmless dangling blob from an earlier unstaged edit) |
+| `git push -u origin codex/read-only-vps-observability` | Passed | Feature branch created on the exact intended origin; local upstream now tracks that feature branch |
+| `gh pr create --draft --base main --head codex/read-only-vps-observability ...` | Passed | Created https://github.com/jacek4yang/parade/pull/1 |
+| `gh pr view 1 ...` | Passed | PR is `OPEN`, draft, base `main`, head `codex/read-only-vps-observability`; initial CI run entered the queue |
 
 Unavailable tools were not claimed as passed: `cargo-deny`, `gitleaks`,
 `sqlite3`, and `nginx`. `cargo-audit` installed in an isolated prefix, but its
@@ -163,9 +170,11 @@ standard Ubuntu runner.
 - Base: `main` at the intentionally empty initialization commit `1d48c80`
 - Head: `codex/read-only-vps-observability`
 - Draft PR body: `PR_BODY.md`
+- Draft PR: https://github.com/jacek4yang/parade/pull/1 (open and verified draft)
 - Merge state: prohibited; this delivery remains draft pending disposable-host
   validation.
 
-The remaining publication operations are a final diff/secret review, feature
-branch push, draft PR creation, and read-back verification of its base, head,
-draft state, and URL.
+Publication is complete. The final documentation synchronization will be pushed
+to the same feature branch; GitHub automatically updates the draft PR. CI is
+recorded separately from the already completed local verification and will not
+be claimed as passed until GitHub reports a successful conclusion.
