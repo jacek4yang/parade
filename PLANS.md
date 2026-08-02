@@ -21,6 +21,8 @@ pushed
 milestones are `23ba6a7` (specifications and architecture), `ea1d612` (signed
 telemetry and traffic accounting), `4921d65` (embedded UI), and `73b55fb`
 (deployment and CI), followed by `eda03da` (verification and delivery notes).
+The publication follow-up `b69dc86` fills npm 10-incompatible dependency-lock
+metadata without removing registry integrity hashes.
 Draft PR [#1](https://github.com/jacek4yang/parade/pull/1) is open against
 `main`; its base/head and draft/open state were read back through GitHub. Nothing
 was merged.
@@ -89,6 +91,7 @@ Only commands that actually ran are recorded as passed.
 | ShellCheck 0.10.0 (user-space Debian package) | Passed | Installer/build/test shell files clean |
 | `bash scripts/test-installer-integrity.sh` | Passed | Bad manifest rejected before execution; existing binary is not replaced before enrollment succeeds |
 | `npm audit --audit-level=high` | Passed | `found 0 vulnerabilities` |
+| `npx --yes npm@10.9.3 ci` | Passed | Reproduced the GitHub runner failure, then installed all 285 packages after restoring the lock's missing version/transitive/integrity metadata |
 | temporary `cargo-audit 0.22.2` install | Passed | Isolated tool build completed |
 | `cargo audit` | Blocked | RustSec fetch failed with `git operation failed: An IO error occurred when talking to the server`; direct shallow advisory-db clone made no progress and was interrupted after an additional bounded wait |
 | deterministic bandwidth test | Passed | 390-byte encoded body; 8,640 reports/30d; 250 B/request plus 2,048 B/day TLS assumption; 5,591,040 B = 5.332 MiB/month |
@@ -106,6 +109,7 @@ Only commands that actually ran are recorded as passed.
 | `git push -u origin codex/read-only-vps-observability` | Passed | Feature branch created on the exact intended origin; local upstream now tracks that feature branch |
 | `gh pr create --draft --base main --head codex/read-only-vps-observability ...` | Passed | Created https://github.com/jacek4yang/parade/pull/1 |
 | `gh pr view 1 ...` | Passed | PR is `OPEN`, draft, base `main`, head `codex/read-only-vps-observability`; initial CI run entered the queue |
+| GitHub Actions CI run `30727221592` | Passed | 5m53s: npm clean install/audit/format/lint/typecheck/unit/build, Rust fmt/clippy/tests/Hub build, Chromium install/E2E, shell syntax/installer test/ShellCheck, and RustSec `cargo audit` all succeeded |
 
 Unavailable tools were not claimed as passed: `cargo-deny`, `gitleaks`,
 `sqlite3`, and `nginx`. `cargo-audit` installed in an isolated prefix, but its
@@ -174,7 +178,9 @@ standard Ubuntu runner.
 - Merge state: prohibited; this delivery remains draft pending disposable-host
   validation.
 
-Publication is complete. The final documentation synchronization will be pushed
-to the same feature branch; GitHub automatically updates the draft PR. CI is
-recorded separately from the already completed local verification and will not
-be claimed as passed until GitHub reports a successful conclusion.
+Publication is complete. GitHub Actions run
+[30727221592](https://github.com/jacek4yang/parade/actions/runs/30727221592)
+passed on the published implementation, including the RustSec check that was
+network-blocked locally. The final documentation synchronization is pushed to
+the same feature branch and must retain a successful head check; nothing is
+merged.

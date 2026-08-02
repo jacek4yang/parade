@@ -99,13 +99,18 @@ seeds, adjustments, and cycle history are durable.
 - `npm audit --audit-level=high` — 0 vulnerabilities.
 - Workspace secret-pattern and monitored-host boundary scans — no candidates or
   forbidden implementation paths found.
+- GitHub Actions run
+  [30727221592](https://github.com/jacek4yang/parade/actions/runs/30727221592) —
+  passed the full npm, Rust, Chromium E2E, installer, ShellCheck, and RustSec
+  sequence in 5m53s.
 
 `cargo-audit 0.22.2` installed successfully in an isolated prefix, but the
 RustSec advisory database fetch failed with a Git transport I/O error; a direct
-shallow clone also stalled and was interrupted after a bounded wait. No RustSec
-pass is claimed. `cargo deny`, Gitleaks, `nginx -t`, and distro-level systemd
-installation tests were unavailable. CI installs and runs ShellCheck and
-`cargo audit` on Ubuntu.
+shallow clone also stalled and was interrupted after a bounded wait. That local
+attempt is not claimed as a pass; the clean GitHub Ubuntu runner subsequently
+installed `cargo-audit`, fetched the advisory database, and passed `cargo audit`.
+`cargo deny`, Gitleaks, `nginx -t`, and distro-level systemd installation tests
+were unavailable.
 
 ## Measured bandwidth and load
 
