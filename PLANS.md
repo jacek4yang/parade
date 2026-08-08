@@ -24,11 +24,12 @@ candidate.
   a PR, or generate an operator trust root without an operator-controlled
   backup.
 - The final release review found and closed two publication-chain hazards:
-  every workflow Action is pinned to a full commit SHA, and publication now
-  compares an exact eight-file asset allowlist before passing the same explicit
-  list to `gh release create`. The signing job also verifies the operator-pinned
-  public-key digest, restores and rechecks all seven Agent executable modes
-  after the artifact round trip, and runs only in `signed-release`.
+  every workflow Action is pinned to a full commit SHA at a current Node
+  24-compatible major version, and publication now compares an exact eight-file
+  asset allowlist before passing the same explicit list to `gh release create`.
+  The signing job also verifies the operator-pinned public-key digest, restores
+  and rechecks all seven Agent executable modes after the artifact round trip,
+  and runs only in `signed-release`.
 
 Release-candidate verification on 2026-08-08:
 
