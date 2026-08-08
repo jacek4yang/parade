@@ -7,7 +7,7 @@ mod syscall;
 use collect::{Collector, ResourceSample};
 use ed25519_dalek::SigningKey;
 use parade_common::{
-    sha256_hex, EnrollmentRequest, EnrollmentResponse, ObservationProfile, ReportAck,
+    sha256_hex, Confidence, EnrollmentRequest, EnrollmentResponse, ObservationProfile, ReportAck,
     ResourceRollup, SignedReport, TelemetryReport, PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -113,9 +113,20 @@ fn main() {
                 .get(2)
                 .map(String::as_str)
                 .unwrap_or("/etc/parade/agent.toml");
-            if let Err(error) = load_config(path)
-                .and_then(|cfg| PersistentState::load(Path::new(&cfg.state_file)).map(|_| ()))
-            {
+            let state_override = args.get(3).map(PathBuf::from);
+            if let Err(error) = load_config(path).and_then(|cfg| {
+                validate_hub_url(&cfg.report_url)?;
+                let state_path = state_override.unwrap_or_else(|| PathBuf::from(&cfg.state_file));
+                let state = PersistentState::load(&state_path)?;
+                if state.server_id != cfg.server_id || state.agent_id != cfg.agent_id {
+                    return Err("identity is not bound to this configuration".into());
+                }
+                let _: [u8; 32] = parade_common::hex_decode(&state.private_key_hex)
+                    .map_err(|_| "invalid private key")?
+                    .try_into()
+                    .map_err(|_| "invalid private key length")?;
+                Ok(())
+            }) {
                 eprintln!("parade-agent: {error}");
                 std::process::exit(1)
             }
@@ -160,6 +171,7 @@ fn run(config_path: &str) -> Result<(), String> {
     let mut next_upload = now()
         + cfg.upload_interval_secs as i64
         + jitter_for(&state.agent_id, cfg.jitter_secs) as i64;
+    let mut next_state_checkpoint = now().saturating_add(60);
     let mut retry_secs = 10u64;
     eprintln!(
         "parade-agent {VERSION} · {} · normal upload every {}s + jitter · read-only",
@@ -178,12 +190,21 @@ fn run(config_path: &str) -> Result<(), String> {
             &state.excluded_interfaces,
             &boot,
         );
-        let checkpoint = state.accumulate(&interfaces, &boot, at);
-        state.save(&state_path)?;
+        let mut checkpoint = state.accumulate(&interfaces, &boot, at);
         if let Some(lease) = &state.active_lease {
             if lease.validate(at).is_err() {
                 state.active_lease = None;
             }
+        }
+        // Ordinary same-boot counters remain recoverable after a process
+        // restart, so a one-minute durable checkpoint avoids two fsyncs every
+        // ten seconds. Boot/reset/new-segment transitions must save immediately:
+        // replaying one after another crash would otherwise double-count the
+        // newly added raw segment. Pending reports, ACKs and policy changes also
+        // remain immediately durable.
+        if should_checkpoint_state(at, next_state_checkpoint, &checkpoint.confidence) {
+            state.save(&state_path)?;
+            next_state_checkpoint = at.saturating_add(60);
         }
         if state.pending.is_some() {
             match upload(
@@ -212,6 +233,15 @@ fn run(config_path: &str) -> Result<(), String> {
                     retry_secs = (retry_secs * 2).min(300);
                     continue;
                 }
+                Err(UploadError::Stale) => {
+                    // This marker is returned only after the Hub verifies the
+                    // Agent signature. Retire the one stale envelope while
+                    // preserving sequence, raw baselines and accumulators; a
+                    // fresh checkpoint is generated below without a queue.
+                    retire_stale_pending(&mut state, &mut checkpoint);
+                    retry_secs = 10;
+                    state.save(&state_path)?;
+                }
                 Err(UploadError::Rejected) => {
                     return Err("Hub rejected this Agent identity or sequence; re-enrollment or operator review is required".into())
                 }
@@ -230,11 +260,21 @@ fn run(config_path: &str) -> Result<(), String> {
             resources.cpu_cores
         );
         let inventory_hash = sha256_hex(inventory.as_bytes());
+        let profile = state
+            .active_lease
+            .as_ref()
+            .map(|lease| lease.profile.clone())
+            .unwrap_or(ObservationProfile::Normal);
         let process_values = collector.processes();
-        let process_bytes =
-            postcard::to_allocvec(&process_values).map_err(|e| format!("encode processes: {e}"))?;
-        let process_hash = sha256_hex(&process_bytes);
-        let processes = if process_hash != state.process_hash {
+        // Normal mode hashes stable identity/evidence only. Volatile CPU/RSS
+        // values therefore do not retransmit the top-N list every five
+        // minutes. Explicit typed snapshots always return the bounded list.
+        let process_hash = process_evidence_hash(&process_values)?;
+        let force_process_snapshot = matches!(
+            profile,
+            ObservationProfile::ProcessSnapshot | ObservationProfile::LiveDetail { .. }
+        );
+        let processes = if force_process_snapshot || process_hash != state.process_hash {
             state.process_hash = process_hash;
             Some(process_values)
         } else {
@@ -244,18 +284,17 @@ fn run(config_path: &str) -> Result<(), String> {
         let listener_bytes = postcard::to_allocvec(&listener_values)
             .map_err(|e| format!("encode listeners: {e}"))?;
         let listener_hash = sha256_hex(&listener_bytes);
-        let listeners = if listener_hash != state.listener_hash {
+        let force_socket_snapshot = matches!(
+            profile,
+            ObservationProfile::SocketSnapshot | ObservationProfile::LiveDetail { .. }
+        );
+        let listeners = if force_socket_snapshot || listener_hash != state.listener_hash {
             state.listener_hash = listener_hash;
             Some(listener_values)
         } else {
             None
         };
         state.inventory_hash = inventory_hash.clone();
-        let profile = state
-            .active_lease
-            .as_ref()
-            .map(|lease| lease.profile.clone())
-            .unwrap_or(ObservationProfile::Normal);
         let lease_id = state
             .active_lease
             .as_ref()
@@ -299,6 +338,7 @@ fn enroll(args: &[String]) -> Result<(), String> {
     let mut token = std::env::var("PARADE_ENROLL_TOKEN").ok();
     let mut config = None;
     let mut state_path = None;
+    let mut staged_state_path = None;
     let mut i = 0;
     while i < args.len() {
         let value = args
@@ -310,6 +350,7 @@ fn enroll(args: &[String]) -> Result<(), String> {
             "--token" => token = Some(value),
             "--config" => config = Some(PathBuf::from(value)),
             "--state" => state_path = Some(PathBuf::from(value)),
+            "--staged-state" => staged_state_path = Some(PathBuf::from(value)),
             other => return Err(format!("unknown enrollment option {other}")),
         }
         i += 2
@@ -319,6 +360,7 @@ fn enroll(args: &[String]) -> Result<(), String> {
     let token = token.ok_or("PARADE_ENROLL_TOKEN or --token is required")?;
     let config_path = config.ok_or("--config is required")?;
     let state_path = state_path.ok_or("--state is required")?;
+    let state_output_path = staged_state_path.as_ref().unwrap_or(&state_path);
     let mut private = [0u8; 32];
     getrandom::getrandom(&mut private).map_err(|e| format!("operating-system RNG: {e}"))?;
     let signing = SigningKey::from_bytes(&private);
@@ -370,7 +412,7 @@ fn enroll(args: &[String]) -> Result<(), String> {
     state.selected_interfaces = enrolled.traffic_policy.selected_interfaces.clone();
     state.excluded_interfaces = enrolled.traffic_policy.excluded_interfaces.clone();
     state.traffic_policy_version = enrolled.traffic_policy.version;
-    state.save(&state_path)?;
+    state.save(state_output_path)?;
     write_atomic(
         &config_path,
         toml::to_string_pretty(&cfg)
@@ -383,6 +425,7 @@ fn enroll(args: &[String]) -> Result<(), String> {
 
 enum UploadError {
     Retry,
+    Stale,
     Rejected,
 }
 fn upload(
@@ -397,6 +440,11 @@ fn upload(
         .send_bytes(&bytes)
     {
         Ok(response) => response.into_json().map_err(|_| UploadError::Retry),
+        Err(ureq::Error::Status(422, response))
+            if response.header("x-parade-error") == Some("stale_authenticated_report") =>
+        {
+            Err(UploadError::Stale)
+        }
         Err(ureq::Error::Status(409, _)) => Err(UploadError::Rejected),
         Err(ureq::Error::Status(401 | 403 | 404, _)) => Err(UploadError::Rejected),
         Err(_) => Err(UploadError::Retry),
@@ -470,10 +518,60 @@ fn jitter_for(value: &str, max: u64) -> u64 {
     u64::from_be_bytes(digest[..8].try_into().expect("digest size")) % (max + 1)
 }
 
+fn should_checkpoint_state(at: i64, next_checkpoint: i64, confidence: &Confidence) -> bool {
+    at >= next_checkpoint || !matches!(confidence, Confidence::High)
+}
+
+fn retire_stale_pending(
+    state: &mut PersistentState,
+    checkpoint: &mut parade_common::TrafficCheckpoint,
+) {
+    state.pending = None;
+    // Evidence hashes were advanced when the now-stale report was staged.
+    // Clear them so the replacement report cannot omit process/socket evidence
+    // that the Hub never accepted.
+    state.process_hash.clear();
+    state.listener_hash.clear();
+    checkpoint.confidence = Confidence::Partial;
+    checkpoint
+        .anomaly_flags
+        .push("stale pending report retired after authenticated Hub rejection".into());
+    checkpoint
+        .anomaly_flags
+        .truncate(parade_common::MAX_TRAFFIC_ANOMALIES);
+}
+
+fn process_evidence_hash(values: &[parade_common::ProcessSummary]) -> Result<String, String> {
+    let mut stable = values
+        .iter()
+        .map(|value| {
+            (
+                value.pid,
+                value.ppid,
+                value.uid,
+                value.executable.as_str(),
+                value.started_ticks,
+                value.cgroup.as_deref(),
+                value.systemd_unit.as_deref(),
+                value.listening_sockets,
+                value.deleted_executable,
+                value.suspicious_writable_path,
+                &value.package_ownership,
+            )
+        })
+        .collect::<Vec<_>>();
+    stable.sort_by(|a, b| a.0.cmp(&b.0).then(a.4.cmp(&b.4)).then(a.3.cmp(b.3)));
+    let encoded = postcard::to_allocvec(&stable)
+        .map_err(|error| format!("encode stable process evidence: {error}"))?;
+    Ok(sha256_hex(&encoded))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parade_common::{Confidence, CoverageItem, TrafficCheckpoint};
+    use parade_common::{
+        Confidence, CoverageItem, PackageOwnership, ProcessSummary, TrafficCheckpoint,
+    };
     #[test]
     fn default_monthly_bandwidth_is_below_target() {
         let key = SigningKey::from_bytes(&[3; 32]);
@@ -526,9 +624,34 @@ mod tests {
         let reports = 30 * 24 * 60 / 5;
         let request_overhead = 250u64;
         let daily_tls_handshake = 2048u64;
-        let monthly = reports * (encoded + request_overhead) + 30 * daily_tls_handshake;
+        let mut snapshot = report.clone();
+        snapshot.body.processes = Some(
+            (0..32)
+                .map(|index| ProcessSummary {
+                    pid: 100 + index,
+                    ppid: 1,
+                    uid: 1_000,
+                    state: "S".into(),
+                    executable: format!("/usr/bin/service-{index}"),
+                    cpu_ticks: 50_000 + u64::from(index),
+                    rss_bytes: 32 * 1024 * 1024,
+                    virtual_bytes: 128 * 1024 * 1024,
+                    started_ticks: 1_000,
+                    cgroup: Some(format!("/system.slice/service-{index}.service")),
+                    systemd_unit: Some(format!("service-{index}.service")),
+                    listening_sockets: 0,
+                    deleted_executable: false,
+                    suspicious_writable_path: false,
+                    package_ownership: PackageOwnership::Unknown,
+                })
+                .collect(),
+        );
+        let daily_snapshot_bytes = postcard::to_allocvec(&snapshot).unwrap().len() as u64;
+        let monthly = reports * (encoded + request_overhead)
+            + 30 * daily_tls_handshake
+            + 30 * daily_snapshot_bytes;
         eprintln!(
-            "BANDWIDTH encoded_body_bytes={encoded} reports_per_30d={reports} request_overhead_bytes={request_overhead} daily_tls_handshake_bytes={daily_tls_handshake} monthly_bytes={monthly} monthly_mib={:.3}",
+            "BANDWIDTH encoded_body_bytes={encoded} daily_process_snapshot_bytes={daily_snapshot_bytes} reports_per_30d={reports} request_overhead_bytes={request_overhead} daily_tls_handshake_bytes={daily_tls_handshake} monthly_bytes={monthly} monthly_mib={:.3}",
             monthly as f64 / (1024.0 * 1024.0)
         );
         assert!(
@@ -546,5 +669,57 @@ mod tests {
         assert!(validate_hub_url("http://127.0.0.1:8008").is_ok());
         assert!(validate_hub_url("http://localhost.attacker.example").is_err());
         assert!(validate_hub_url("http://127.0.0.1.evil").is_err());
+    }
+
+    #[test]
+    fn counter_transitions_checkpoint_immediately_but_normal_samples_are_delayed() {
+        assert!(!should_checkpoint_state(10, 60, &Confidence::High));
+        assert!(should_checkpoint_state(60, 60, &Confidence::High));
+        assert!(should_checkpoint_state(10, 60, &Confidence::Partial));
+        assert!(should_checkpoint_state(10, 60, &Confidence::Estimated));
+    }
+
+    #[test]
+    fn process_evidence_hash_ignores_volatile_usage_but_tracks_identity() {
+        let mut process = ProcessSummary {
+            pid: 42,
+            executable: "/usr/bin/example".into(),
+            started_ticks: 100,
+            ..Default::default()
+        };
+        let initial = process_evidence_hash(&[process.clone()]).unwrap();
+        process.cpu_ticks = 9_999;
+        process.rss_bytes = 123_456;
+        process.virtual_bytes = 999_999;
+        process.state = "R".into();
+        assert_eq!(process_evidence_hash(&[process.clone()]).unwrap(), initial);
+        process.executable = "/tmp/replaced".into();
+        assert_ne!(process_evidence_hash(&[process]).unwrap(), initial);
+    }
+
+    #[test]
+    fn authenticated_stale_retirement_preserves_counters_and_resends_evidence() {
+        let mut state = PersistentState::new("key".into());
+        state.sequence = 41;
+        state.observed_rx = 10_000;
+        state.observed_tx = 20_000;
+        state.process_hash = "process".into();
+        state.listener_hash = "listener".into();
+        let mut checkpoint = TrafficCheckpoint {
+            observed_rx: state.observed_rx,
+            observed_tx: state.observed_tx,
+            confidence: Confidence::High,
+            ..Default::default()
+        };
+        retire_stale_pending(&mut state, &mut checkpoint);
+        assert_eq!(state.sequence, 41);
+        assert_eq!((state.observed_rx, state.observed_tx), (10_000, 20_000));
+        assert!(state.process_hash.is_empty());
+        assert!(state.listener_hash.is_empty());
+        assert_eq!(checkpoint.confidence, Confidence::Partial);
+        assert!(checkpoint
+            .anomaly_flags
+            .iter()
+            .any(|value| value.contains("authenticated Hub rejection")));
     }
 }

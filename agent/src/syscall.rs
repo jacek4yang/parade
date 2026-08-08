@@ -106,7 +106,14 @@ struct Statfs {
     f_spare: [i64; 4],
 }
 
-/// Filesystem capacity at `path` → `(total_bytes, free_bytes)`.
+pub struct FilesystemCapacity {
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub total_inodes: u64,
+    pub free_inodes: u64,
+}
+
+/// Filesystem byte and inode capacity at `path`.
 ///
 /// `free` is the kernel's `f_bfree` (all free blocks), matching how `df`
 /// computes total/used. Returns `None` if the syscall fails or the target
@@ -116,7 +123,7 @@ struct Statfs {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-pub fn statfs_bytes(path: &str) -> Option<(u64, u64)> {
+pub fn statfs_capacity(path: &str) -> Option<FilesystemCapacity> {
     // NUL-terminate without libc's CString (avoid the dependency entirely).
     let mut buf = Vec::with_capacity(path.len() + 1);
     buf.extend_from_slice(path.as_bytes());
@@ -145,7 +152,12 @@ pub fn statfs_bytes(path: &str) -> Option<(u64, u64)> {
     };
     let total = st.f_blocks.saturating_mul(bs);
     let free = st.f_bfree.saturating_mul(bs);
-    Some((total, free))
+    Some(FilesystemCapacity {
+        total_bytes: total,
+        free_bytes: free,
+        total_inodes: st.f_files,
+        free_inodes: st.f_ffree,
+    })
 }
 
 #[cfg(not(any(
@@ -153,7 +165,7 @@ pub fn statfs_bytes(path: &str) -> Option<(u64, u64)> {
     target_arch = "aarch64",
     target_arch = "riscv64"
 )))]
-pub fn statfs_bytes(_path: &str) -> Option<(u64, u64)> {
+pub fn statfs_capacity(_path: &str) -> Option<FilesystemCapacity> {
     // No raw statfs for this architecture — disk capacity reported as 0.
     None
 }

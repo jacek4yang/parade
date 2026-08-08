@@ -12,6 +12,8 @@ pub const MAX_REPORT_BYTES: usize = 256 * 1024;
 pub const MAX_PROCESSES: usize = 32;
 pub const MAX_LISTENERS: usize = 128;
 pub const MAX_COVERAGE_ITEMS: usize = 64;
+pub const MAX_INTERFACES: usize = 64;
+pub const MAX_TRAFFIC_ANOMALIES: usize = 32;
 pub const MAX_LIVE_DETAIL_SECS: i64 = 600;
 
 /// The complete set of detail levels the Hub may lease from an Agent.
@@ -256,8 +258,8 @@ impl TelemetryReport {
                 .as_ref()
                 .is_some_and(|values| values.len() > MAX_LISTENERS)
             || self.coverage.len() > MAX_COVERAGE_ITEMS
-            || self.traffic.interfaces.len() > 64
-            || self.traffic.anomaly_flags.len() > 32
+            || self.traffic.interfaces.len() > MAX_INTERFACES
+            || self.traffic.anomaly_flags.len() > MAX_TRAFFIC_ANOMALIES
         {
             return Err(ProtocolError::TooLarge);
         }

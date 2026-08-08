@@ -16,6 +16,15 @@ messages. Migration 3 adds the per-credential delivered interface-policy
 version used to make acknowledgement loss and policy changes idempotent. All
 migrations are transactional and checked before the listener starts.
 
+Migration 4 adds the closed provider billing-mode enum, optional independent
+RX/TX limits, directional-seed provenance, typed adjustment directions, and
+retention indexes. It also adds `security_findings.series_key`, merges legacy
+duplicate `(server, rule, version)` rows without losing first/last/count
+history, and installs the unique series index used by the bounded finding
+engine. Existing combined seeds and adjustments migrate as `sum` and `billed`;
+their totals remain unchanged. The upgrade regression test opens a real
+version-3 database fixture and verifies preserved traffic and finding results.
+
 Wire protocol version 2 adds the traffic-policy version to every signed
 checkpoint. Protocol-1 Agents from an intermediate development build are not
 wire-compatible and must be upgraded/re-enrolled together with this Hub. The

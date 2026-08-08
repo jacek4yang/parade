@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::db::{audit, Database, DbError};
-use crate::traffic::CycleRuleInput;
+use crate::traffic::{CycleRuleInput, TrafficAdjustmentInput, TrafficSeedInput};
 use argon2::password_hash::{PasswordHash, PasswordVerifier};
 use argon2::Argon2;
 use axum::body::Bytes;
@@ -10,16 +10,18 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use ed25519_dalek::pkcs8::DecodePublicKey;
+use ed25519_dalek::{Signature, VerifyingKey};
 use parade_common::{
-    EnrollmentRequest, EnrollmentResponse, ObservationLease, ObservationProfile, ReportAck,
-    SignedReport, TrafficPolicy, MAX_REPORT_BYTES, PROTOCOL_VERSION,
+    sha256_hex, EnrollmentRequest, EnrollmentResponse, ObservationLease, ObservationProfile,
+    ReportAck, SignedReport, TrafficPolicy, MAX_REPORT_BYTES, PROTOCOL_VERSION,
 };
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tower_http::timeout::TimeoutLayer;
 
@@ -84,12 +86,16 @@ pub fn router(app: App) -> Router {
         .route("/api/v1/login", post(login))
         .route("/api/v1/logout", post(logout))
         .route("/api/v1/session", get(session))
-        .route("/api/v1/enroll", post(enroll))
+        .route(
+            "/api/v1/enroll",
+            post(enroll).layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
+        )
         .route(
             "/api/v1/reports",
             post(report).layer(axum::extract::DefaultBodyLimit::max(MAX_REPORT_BYTES)),
         )
         .route("/api/v1/fleet", get(fleet))
+        .route("/api/v1/topology", get(topology))
         .route("/api/v1/findings", get(fleet_findings))
         .route("/api/v1/events", get(fleet_events))
         .route("/api/v1/traffic", get(fleet_traffic))
@@ -129,6 +135,10 @@ pub fn router(app: App) -> Router {
 }
 
 async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Response {
+    let revalidatable_asset = matches!(
+        request.uri().path(),
+        "/app.js" | "/app.css" | "/login.js" | "/login.css"
+    );
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -140,7 +150,14 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if revalidatable_asset {
+            "public, max-age=0, must-revalidate"
+        } else {
+            "no-store"
+        }),
+    );
     headers.insert(
         "permissions-policy",
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
@@ -155,33 +172,64 @@ async fn index(State(app): State<App>, headers: HeaderMap) -> Response {
     }
     Html(INDEX_HTML.replace("{{TITLE}}", &app.cfg.dashboard.title)).into_response()
 }
-async fn app_js() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+async fn app_js(headers: HeaderMap) -> Response {
+    static ETAG: OnceLock<String> = OnceLock::new();
+    static_asset(
+        &headers,
         include_str!("../assets/app.js"),
+        "text/javascript; charset=utf-8",
+        &ETAG,
     )
-        .into_response()
 }
-async fn app_css() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+async fn app_css(headers: HeaderMap) -> Response {
+    static ETAG: OnceLock<String> = OnceLock::new();
+    static_asset(
+        &headers,
         include_str!("../assets/app.css"),
+        "text/css; charset=utf-8",
+        &ETAG,
     )
-        .into_response()
 }
-async fn login_css() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+async fn login_css(headers: HeaderMap) -> Response {
+    static ETAG: OnceLock<String> = OnceLock::new();
+    static_asset(
+        &headers,
         include_str!("../assets/login.css"),
+        "text/css; charset=utf-8",
+        &ETAG,
     )
-        .into_response()
 }
-async fn login_js() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+async fn login_js(headers: HeaderMap) -> Response {
+    static ETAG: OnceLock<String> = OnceLock::new();
+    static_asset(
+        &headers,
         include_str!("../assets/login.js"),
+        "text/javascript; charset=utf-8",
+        &ETAG,
     )
-        .into_response()
+}
+
+fn static_asset(
+    request_headers: &HeaderMap,
+    content: &'static str,
+    content_type: &'static str,
+    etag_cell: &'static OnceLock<String>,
+) -> Response {
+    let etag = etag_cell.get_or_init(|| format!("\"{}\"", sha256_hex(content.as_bytes())));
+    let matched = request_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|candidate| candidate.trim() == etag));
+    let mut response = if matched {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        ([(header::CONTENT_TYPE, content_type)], content).into_response()
+    };
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).expect("SHA-256 ETag is a valid header"),
+    );
+    response
 }
 
 #[derive(Deserialize)]
@@ -346,20 +394,24 @@ async fn fleet(
     }
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let offset = query.offset.unwrap_or(0).max(0);
+    let search = query.q.unwrap_or_default();
+    if search.len() > 100 {
+        return error(StatusCode::BAD_REQUEST, "fleet search is too long");
+    }
     let conn = match app.db.connection() {
         Ok(c) => c,
         Err(e) => return db_error(e),
     };
-    let mut stmt=match conn.prepare("SELECT id,name,group_name,status,last_seen,os,kernel,arch,agent_version,coverage_json FROM servers WHERE status!='deleted' ORDER BY name,id LIMIT ?1 OFFSET ?2"){Ok(s)=>s,Err(e)=>return db_error(e.into())};
-    let rows=match stmt.query_map(params![limit,offset],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"group":r.get::<_,String>(2)?,"status":display_status(r.get::<_,String>(3)?,r.get::<_,Option<i64>>(4)?,now(),app.cfg.hub.stale_after_secs,app.cfg.hub.offline_after_secs),"last_seen":r.get::<_,Option<i64>>(4)?,"os":r.get::<_,Option<String>>(5)?,"kernel":r.get::<_,Option<String>>(6)?,"arch":r.get::<_,Option<String>>(7)?,"agent_version":r.get::<_,Option<String>>(8)?,"coverage":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(json!([]))}))){Ok(r)=>r,Err(e)=>return db_error(e.into())};
+    let mut stmt=match conn.prepare("SELECT s.id,s.name,s.group_name,s.status,s.last_seen,s.os,s.kernel,s.arch,s.agent_version,s.coverage_json,(SELECT payload_json FROM resource_rollups r WHERE r.server_id=s.id ORDER BY interval_end DESC LIMIT 1),(SELECT COUNT(*) FROM security_findings f WHERE f.server_id=s.id AND f.state='active'),(SELECT confidence FROM billing_cycle_instance c WHERE c.server_id=s.id AND c.state='open' ORDER BY start_at DESC LIMIT 1) FROM servers s WHERE s.status!='deleted' AND (?3='' OR instr(lower(s.name || ' ' || s.id || ' ' || s.group_name),lower(?3))>0) ORDER BY s.name,s.id LIMIT ?1 OFFSET ?2"){Ok(s)=>s,Err(e)=>return db_error(e.into())};
+    let rows=match stmt.query_map(params![limit,offset,search],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"group":r.get::<_,String>(2)?,"status":display_status(r.get::<_,String>(3)?,r.get::<_,Option<i64>>(4)?,now(),app.cfg.hub.stale_after_secs,app.cfg.hub.offline_after_secs),"last_seen":r.get::<_,Option<i64>>(4)?,"os":r.get::<_,Option<String>>(5)? ,"kernel":r.get::<_,Option<String>>(6)? ,"arch":r.get::<_,Option<String>>(7)? ,"agent_version":r.get::<_,Option<String>>(8)? ,"coverage":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(json!([])),"resources":r.get::<_,Option<String>>(10)?.and_then(|value|serde_json::from_str::<Value>(&value).ok()),"active_findings":r.get::<_,i64>(11)?,"traffic_confidence":r.get::<_,Option<String>>(12)?}))){Ok(r)=>r,Err(e)=>return db_error(e.into())};
     let servers = match rows.collect::<Result<Vec<_>, _>>() {
         Ok(v) => v,
         Err(e) => return db_error(e.into()),
     };
     let total: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM servers WHERE status!='deleted'",
-            [],
+            "SELECT COUNT(*) FROM servers WHERE status!='deleted' AND (?1='' OR instr(lower(name || ' ' || id || ' ' || group_name),lower(?1))>0)",
+            [&search],
             |r| r.get(0),
         )
         .unwrap_or(0);
@@ -386,7 +438,150 @@ async fn fleet(
             }
         }
     }
+    let active_findings = conn
+        .query_row(
+            "SELECT COUNT(*) FROM security_findings WHERE state='active'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let resource_pressure = conn
+        .query_row(
+            "SELECT COUNT(*) FROM servers s WHERE s.status!='deleted' AND EXISTS (
+                SELECT 1 FROM resource_rollups r WHERE r.server_id=s.id
+                  AND r.interval_end=(SELECT MAX(latest.interval_end) FROM resource_rollups latest WHERE latest.server_id=s.id)
+                  AND (COALESCE(json_extract(r.payload_json,'$.cpu_avg_pct'),0)>=90
+                    OR (COALESCE(json_extract(r.payload_json,'$.mem_total'),0)>0 AND json_extract(r.payload_json,'$.mem_used')*1.0/json_extract(r.payload_json,'$.mem_total')>=0.9)
+                    OR (COALESCE(json_extract(r.payload_json,'$.disk_total'),0)>0 AND json_extract(r.payload_json,'$.disk_used')*1.0/json_extract(r.payload_json,'$.disk_total')>=0.9))
+            )",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    summary.insert("active_findings".into(), json!(active_findings));
+    summary.insert("resource_pressure".into(), json!(resource_pressure));
     Json(json!({"api_version":1,"total":total,"limit":limit,"offset":offset,"servers":servers,"summary":summary,"read_only_targets":true,"generated_at":now()})).into_response()
+}
+
+async fn topology(State(app): State<App>, headers: HeaderMap) -> Response {
+    if !authenticated(&app, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let conn = match app.db.connection() {
+        Ok(value) => value,
+        Err(error) => return db_error(error),
+    };
+    let mut source_counts = HashMap::<String, i64>::new();
+    let mut counts = match conn.prepare(
+        "SELECT report_ip,COUNT(*) FROM servers WHERE status!='deleted' AND report_ip IS NOT NULL GROUP BY report_ip",
+    ) {
+        Ok(value) => value,
+        Err(error) => return db_error(error.into()),
+    };
+    let rows = match counts.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    }) {
+        Ok(value) => value,
+        Err(error) => return db_error(error.into()),
+    };
+    for value in rows.flatten() {
+        source_counts.insert(value.0, value.1);
+    }
+    drop(counts);
+
+    const LIMIT: i64 = 24;
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM servers WHERE status!='deleted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let mut statement = match conn.prepare(
+        "SELECT id,name,status,last_seen,report_ip FROM servers WHERE status!='deleted' ORDER BY CASE WHEN last_seen IS NULL THEN 0 ELSE 1 END,last_seen ASC,name,id LIMIT ?1",
+    ) {
+        Ok(value) => value,
+        Err(error) => return db_error(error.into()),
+    };
+    let at = now();
+    let edges = match statement.query_map([LIMIT], |row| {
+        let source = row.get::<_, Option<String>>(4)?;
+        let shared_count = source
+            .as_ref()
+            .and_then(|value| source_counts.get(value))
+            .copied()
+            .unwrap_or(0);
+        let source_category = if shared_count > 1 {
+            "shared_observed_source"
+        } else {
+            source
+                .as_deref()
+                .map(source_category)
+                .unwrap_or("unknown")
+        };
+        Ok(json!({
+            "server_id": row.get::<_,String>(0)?,
+            "server_name": row.get::<_,String>(1)?,
+            "status": display_status(row.get::<_,String>(2)?,row.get::<_,Option<i64>>(3)?,at,app.cfg.hub.stale_after_secs,app.cfg.hub.offline_after_secs),
+            "last_seen": row.get::<_,Option<i64>>(3)?,
+            "source_category": source_category,
+            "shared_source_count": shared_count.max(1),
+        }))
+    }) {
+        Ok(values) => match values.collect::<Result<Vec<_>, _>>() {
+            Ok(values) => values,
+            Err(error) => return db_error(error.into()),
+        },
+        Err(error) => return db_error(error.into()),
+    };
+    Json(json!({
+        "api_version": 1,
+        "relationship": "verified_agent_outbound_reports",
+        "hub": {"label": "Parade Hub"},
+        "total": total,
+        "displayed": edges.len(),
+        "truncated": total > LIMIT,
+        "edges": edges,
+        "generated_at": at,
+        "active_probing": false,
+        "peer_connections": false,
+    }))
+    .into_response()
+}
+
+fn source_category(value: &str) -> &'static str {
+    let Ok(ip) = value.parse::<IpAddr>() else {
+        return "unknown";
+    };
+    match ip {
+        IpAddr::V4(ip) if ip.is_loopback() || ip.is_link_local() => "loopback_or_proxy_boundary",
+        IpAddr::V4(ip) if ip.is_private() => "private_observed_source",
+        IpAddr::V4(ip) if ipv4_is_special(ip.octets()) => "special_observed_source",
+        IpAddr::V6(ip) if ip.is_loopback() || ip.is_unicast_link_local() => {
+            "loopback_or_proxy_boundary"
+        }
+        IpAddr::V6(ip) if ip.is_unique_local() => "private_observed_source",
+        IpAddr::V6(ip) if ip.is_unspecified() || ip.is_multicast() => "special_observed_source",
+        IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some() => {
+            source_category(&ip.to_ipv4_mapped().expect("checked").to_string())
+        }
+        IpAddr::V6(ip) if matches!(ip.segments(), [0x2001, 0x0db8, ..] | [0x2001, 0x0002, ..]) => {
+            "special_observed_source"
+        }
+        _ => "internet_scope_source",
+    }
+}
+
+fn ipv4_is_special(octets: [u8; 4]) -> bool {
+    let [first, second, third, _] = octets;
+    first == 0
+        || first >= 224
+        || (first == 100 && (64..=127).contains(&second))
+        || (first == 192 && second == 0 && third == 0)
+        || (first == 192 && second == 0 && third == 2)
+        || (first == 198 && (second == 18 || second == 19))
+        || (first == 198 && second == 51 && third == 100)
+        || (first == 203 && second == 0 && third == 113)
 }
 
 async fn audit_events(State(app): State<App>, headers: HeaderMap) -> Response {
@@ -494,6 +689,7 @@ async fn fleet_traffic(State(app): State<App>, headers: HeaderMap) -> Response {
 struct ListQuery {
     limit: Option<i64>,
     offset: Option<i64>,
+    q: Option<String>,
 }
 
 async fn server_detail(
@@ -516,14 +712,36 @@ async fn server_detail(
 }
 
 async fn resources(State(app): State<App>, headers: HeaderMap, Path(id): Path<String>) -> Response {
-    latest_json(
-        &app,
-        &headers,
-        &id,
-        "resource_rollups",
-        "payload_json",
-        "interval_end",
-    )
+    if !authenticated(&app, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let conn = match app.db.connection() {
+        Ok(value) => value,
+        Err(error) => return db_error(error),
+    };
+    let mut statement = match conn.prepare("SELECT payload_json,interval_end FROM resource_rollups WHERE server_id=?1 ORDER BY interval_end DESC LIMIT 72") {
+        Ok(value) => value,
+        Err(error) => return db_error(error.into()),
+    };
+    let rows = match statement.query_map([id], |row| {
+        let payload = row.get::<_, String>(0)?;
+        Ok(json!({
+            "observed_at": row.get::<_, i64>(1)?,
+            "data": serde_json::from_str::<Value>(&payload).unwrap_or(json!(null)),
+        }))
+    }) {
+        Ok(values) => match values.collect::<Result<Vec<_>, _>>() {
+            Ok(values) => values,
+            Err(error) => return db_error(error.into()),
+        },
+        Err(error) => return db_error(error.into()),
+    };
+    Json(json!({
+        "observed_at": rows.first().and_then(|value| value.get("observed_at")),
+        "data": rows.first().and_then(|value| value.get("data")).cloned().unwrap_or(json!(null)),
+        "history": rows.into_iter().rev().collect::<Vec<_>>(),
+    }))
+    .into_response()
 }
 async fn processes(State(app): State<App>, headers: HeaderMap, Path(id): Path<String>) -> Response {
     latest_json(
@@ -649,7 +867,14 @@ async fn traffic(State(app): State<App>, headers: HeaderMap, Path(id): Path<Stri
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.db.traffic_usage(&id) {
-        Ok(v) => Json(json!(v)).into_response(),
+        Ok(v) => match app.db.traffic_history(&id) {
+            Ok(history) => {
+                let mut value = json!(v);
+                value["history"] = json!(history);
+                Json(value).into_response()
+            }
+            Err(error) => db_error(error),
+        },
         Err(DbError::NotFound) => Json(json!({"state":"awaiting_checkpoint"})).into_response(),
         Err(e) => db_error(e),
     }
@@ -668,59 +893,30 @@ async fn traffic_rule(
         Err(e) => db_error(e),
     }
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SeedInput {
-    combined_bytes: u64,
-    effective_at: i64,
-    #[serde(default)]
-    note: String,
-}
 async fn traffic_seed(
     State(app): State<App>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(input): Json<SeedInput>,
+    Json(input): Json<TrafficSeedInput>,
 ) -> Response {
     if let Err(r) = mutation_auth(&app, &headers) {
         return *r;
     }
-    match app.db.add_traffic_seed(
-        &id,
-        input.combined_bytes,
-        input.effective_at,
-        &input.note,
-        now(),
-        "admin",
-    ) {
+    match app.db.add_traffic_seed(&id, &input, now(), "admin") {
         Ok(v) => Json(json!(v)).into_response(),
         Err(e) => db_error(e),
     }
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AdjustmentInput {
-    signed_bytes: i64,
-    effective_at: i64,
-    reason: String,
 }
 async fn traffic_adjustment(
     State(app): State<App>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(input): Json<AdjustmentInput>,
+    Json(input): Json<TrafficAdjustmentInput>,
 ) -> Response {
     if let Err(r) = mutation_auth(&app, &headers) {
         return *r;
     }
-    match app.db.add_traffic_adjustment(
-        &id,
-        input.signed_bytes,
-        input.effective_at,
-        &input.reason,
-        now(),
-        "admin",
-    ) {
+    match app.db.add_traffic_adjustment(&id, &input, now(), "admin") {
         Ok(v) => Json(json!(v)).into_response(),
         Err(e) => db_error(e),
     }
@@ -947,7 +1143,12 @@ async fn mint_enrollment(
                 )
             }
         };
-    let _ = (public_key, signature);
+    if !verify_release_manifest(&manifest, &public_key, &signature) {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "release manifest signature verification failed",
+        );
+    }
     let manifest_sha256 = parade_common::sha256_hex(&manifest);
     let token = random_hex::<32>();
     let expires = now() + 900;
@@ -972,8 +1173,8 @@ async fn enroll(
 ) -> Response {
     let source = client_ip(&app, &headers, peer);
     if !app.limits.lock().expect("rate limiter").allow(
-        format!("enroll:{source}"),
-        30,
+        format!("enroll-peer:{source}"),
+        600,
         Duration::from_secs(900),
     ) {
         return error(
@@ -981,10 +1182,25 @@ async fn enroll(
             "enrollment rate limit exceeded",
         );
     }
-    if input.protocol_version != PROTOCOL_VERSION || input.agent_nonce.len() != 64 {
+    if input.protocol_version != PROTOCOL_VERSION
+        || input.agent_nonce.len() != 64
+        || input.token.len() != 64
+        || input.public_key_hex.len() != 64
+    {
         return error(
             StatusCode::BAD_REQUEST,
             "unsupported or malformed enrollment request",
+        );
+    }
+    let token_key = parade_common::sha256_hex(input.token.as_bytes());
+    if !app.limits.lock().expect("rate limiter").allow(
+        format!("enroll-token:{token_key}"),
+        5,
+        Duration::from_secs(900),
+    ) {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "enrollment token retry limit exceeded",
         );
     }
     let agent_id = random_hex::<16>();
@@ -1026,7 +1242,7 @@ async fn report(
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok());
-    let signed = match decode_report_envelope(content_type, &body, now) {
+    let signed = match decode_report_envelope(content_type, &body) {
         Ok(value) => value,
         Err((status, message)) => return error(status, message),
     };
@@ -1036,6 +1252,18 @@ async fn report(
     };
     if signed.verify(&public).is_err() {
         return error(StatusCode::UNAUTHORIZED, "invalid report signature");
+    }
+    // Freshness is evaluated only after the independent Agent signature has
+    // authenticated the envelope. This lets the Agent retire one stale
+    // bounded-spool item without accepting unauthenticated discard signals.
+    // The Hub never ingests the stale report.
+    if signed.sent_at.abs_diff(now) > 600 {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            [("x-parade-error", "stale_authenticated_report")],
+            Json(json!({"error":"stale authenticated report","code":"stale_authenticated_report"})),
+        )
+            .into_response();
     }
     if !app.limits.lock().expect("rate limiter").allow(
         format!("verified-agent:{}", signed.agent_id),
@@ -1107,7 +1335,6 @@ fn traffic_policy(db: &Database, server: &str) -> Result<TrafficPolicy, DbError>
 fn decode_report_envelope(
     content_type: Option<&str>,
     body: &[u8],
-    now: i64,
 ) -> Result<SignedReport, (StatusCode, &'static str)> {
     if body.len() > MAX_REPORT_BYTES {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "report exceeds size limit"));
@@ -1128,9 +1355,6 @@ fn decode_report_envelope(
     {
         return Err((StatusCode::BAD_REQUEST, "invalid report identifiers"));
     }
-    if signed.sent_at.abs_diff(now) > 600 {
-        return Err((StatusCode::UNAUTHORIZED, "stale report"));
-    }
     if signed.body.traffic.sampled_at.abs_diff(signed.sent_at) > 60
         || signed.body.resources.interval_end.abs_diff(signed.sent_at) > 60
         || signed.body.resources.interval_end != signed.body.traffic.sampled_at
@@ -1141,6 +1365,19 @@ fn decode_report_envelope(
         ));
     }
     Ok(signed)
+}
+
+fn verify_release_manifest(manifest: &[u8], public_pem: &[u8], signature: &[u8]) -> bool {
+    let Ok(public_pem) = std::str::from_utf8(public_pem) else {
+        return false;
+    };
+    let Ok(key) = VerifyingKey::from_public_key_pem(public_pem) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(signature) else {
+        return false;
+    };
+    key.verify_strict(manifest, &signature).is_ok()
 }
 
 fn active_lease(
@@ -1344,35 +1581,50 @@ mod tests {
     fn report_envelope_rejects_stale_oversized_malformed_and_wrong_content_type() {
         let at = 2_000_000_000;
         let bytes = encoded(at);
-        assert!(decode_report_envelope(Some("application/x-parade"), &bytes, at).is_ok());
+        assert!(decode_report_envelope(Some("application/x-parade"), &bytes).is_ok());
         assert_eq!(
-            decode_report_envelope(Some("application/x-parade"), &bytes, at + 601)
-                .unwrap_err()
-                .0,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            decode_report_envelope(Some("application/json"), &bytes, at)
+            decode_report_envelope(Some("application/json"), &bytes)
                 .unwrap_err()
                 .0,
             StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
         assert_eq!(
-            decode_report_envelope(Some("application/x-parade"), b"broken", at)
+            decode_report_envelope(Some("application/x-parade"), b"broken")
                 .unwrap_err()
                 .0,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            decode_report_envelope(
-                Some("application/x-parade"),
-                &vec![0; MAX_REPORT_BYTES + 1],
-                at,
-            )
-            .unwrap_err()
-            .0,
+            decode_report_envelope(Some("application/x-parade"), &vec![0; MAX_REPORT_BYTES + 1],)
+                .unwrap_err()
+                .0,
             StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    #[test]
+    fn release_manifest_signature_is_verified_cryptographically() {
+        use ed25519_dalek::pkcs8::EncodePublicKey;
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let pem = key
+            .verifying_key()
+            .to_public_key_pem(Default::default())
+            .unwrap();
+        let manifest = b"abcd  x86_64-unknown-linux-musl/parade-agent\n";
+        let signature = key.sign(manifest).to_bytes();
+        assert!(verify_release_manifest(
+            manifest,
+            pem.as_bytes(),
+            &signature
+        ));
+        assert!(!verify_release_manifest(
+            b"changed",
+            pem.as_bytes(),
+            &signature
+        ));
+        assert!(!verify_release_manifest(manifest, b"not a key", &signature));
     }
 
     #[test]
@@ -1411,5 +1663,31 @@ mod tests {
         );
         drop(app);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn topology_source_categories_are_evidence_limited() {
+        assert_eq!(source_category("10.0.0.8"), "private_observed_source");
+        assert_eq!(source_category("127.0.0.1"), "loopback_or_proxy_boundary");
+        assert_eq!(source_category("100.64.0.1"), "special_observed_source");
+        assert_eq!(source_category("192.0.2.1"), "special_observed_source");
+        assert_eq!(source_category("2001:db8::1"), "special_observed_source");
+        assert_eq!(
+            source_category("2001:4860:4860::8888"),
+            "internet_scope_source"
+        );
+        assert_eq!(source_category("not-an-address"), "unknown");
+    }
+
+    #[test]
+    fn embedded_assets_have_stable_revalidation_etags() {
+        static ETAG: OnceLock<String> = OnceLock::new();
+        let first = static_asset(&HeaderMap::new(), "asset", "text/plain", &ETAG);
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first.headers().get(header::ETAG).unwrap().clone();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag);
+        let second = static_asset(&headers, "asset", "text/plain", &ETAG);
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
     }
 }

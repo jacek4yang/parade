@@ -51,6 +51,22 @@ async fn main() {
         );
         return;
     }
+    if args.get(1).is_some_and(|value| value == "check-config") {
+        let Some(path) = args.get(2) else {
+            eprintln!("usage: parade-hub check-config /path/to/hub.toml");
+            std::process::exit(2)
+        };
+        if args.get(3).is_some() {
+            eprintln!("usage: parade-hub check-config /path/to/hub.toml");
+            std::process::exit(2)
+        }
+        config::load(path).unwrap_or_else(|error| {
+            eprintln!("parade-hub: {error}");
+            std::process::exit(1)
+        });
+        println!("parade-hub: configuration is valid");
+        return;
+    }
     let path = args
         .get(1)
         .map(String::as_str)

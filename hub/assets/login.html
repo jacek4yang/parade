@@ -9,16 +9,23 @@
   </head>
   <body class="login-page">
     <main class="login-card">
+      <label class="login-language">
+        <span data-i18n="Language">Language</span>
+        <select id="login-language" aria-label="Language">
+          <option value="en">English</option>
+          <option value="zh-CN">简体中文</option>
+        </select>
+      </label>
       <div class="brand-mark" aria-hidden="true">P</div>
-      <p class="eyebrow">Read-only fleet observability</p>
-      <h1>{{TITLE}}</h1>
-      <p>Sign in to inspect accepted telemetry and administer Hub-side metadata.</p>
+      <p class="eyebrow" data-i18n="Read-only fleet observability">Read-only fleet observability</p>
+      <h1 id="login-title">{{TITLE}}</h1>
+      <p data-i18n="Sign in to inspect accepted telemetry and administer Hub-side metadata.">Sign in to inspect accepted telemetry and administer Hub-side metadata.</p>
       <form id="login-form" class="form">
-        <label for="password">Administrator password</label>
+        <label for="password" data-i18n="Administrator password">Administrator password</label>
         <input id="password" name="password" type="password" autocomplete="current-password" minlength="12" required autofocus />
-        <button class="primary" type="submit">Sign in</button>
+        <button class="primary" type="submit" data-i18n="Sign in">Sign in</button>
       </form>
-      <p id="login-message" class="notice" role="status" aria-live="polite">Monitored servers remain observation-only.</p>
+      <p id="login-message" class="notice" role="status" aria-live="polite" data-i18n="Monitored servers remain observation-only.">Monitored servers remain observation-only.</p>
     </main>
     <script type="module" src="/login.js"></script>
   </body>

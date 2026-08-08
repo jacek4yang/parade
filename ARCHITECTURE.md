@@ -57,6 +57,14 @@ user with no capabilities. It reads narrowly defined Linux telemetry and writes
 only its configuration, private signing identity, monotonic traffic accumulator,
 one pending signed report, active lease state, and logs in Parade-owned paths.
 
+This outbound-only design supports Agents behind NAT/CGNAT without port
+mapping. The Hub records the verified report source as limited evidence, never
+as host identity. The UI may group equal sources as a possible shared NAT,
+proxy, VPN, or egress policy and draw only Agent-to-Hub report edges. It does
+not scan reachability, disclose raw source addresses by default, infer
+peer-to-peer links, open Agent ports, relay reports, or form a mesh. A public
+source does not prove inbound reachability.
+
 ## Data and protocol flow
 
 The Agent samples locally every ten seconds. Every five minutes plus stable and
@@ -80,6 +88,17 @@ seeds, adjustments, cycles, sessions, leases, audit records, revocations, and
 tombstones are transactional. There is no application-wide state mutex across
 serialization, database, network, or alert delivery. The only mutex bounds the
 small in-memory rate-limiter map to 10,000 keys.
+
+WAL auto-checkpointing and a 16 MiB journal-size limit bound transient journal
+retention. Operational pruning deletes at most 10,000 rows per table and pass,
+so maintenance transactions remain short and converge over subsequent minute
+ticks. Agent reads are capped, interface/anomaly vectors and same-boot baselines
+are hard bounded. Normal raw-counter state is durably checkpointed once per
+minute; boot/reset/new-segment transitions, pending reports and acknowledgement/
+policy changes remain immediately durable so a second crash cannot replay a
+whole counter segment. The supplied systemd units impose memory, task,
+file-descriptor, restart, and log-rate ceilings. Journald controls total log
+disk use globally; Parade does not mutate that host-wide policy.
 
 Detailed resources are retained for 30 days, traffic rollups for 90 days,
 process/socket changes for seven days while preserving the latest per server,
@@ -116,19 +135,30 @@ observed exactly at the boundary, the split is labeled `estimated`, then refined
 from the adjacent checkpoints when reporting resumes. History is preserved and
 Linux counters are never reset.
 
+Provider rules use one of five closed modes: RX+TX sum, inbound only, outbound
+only, maximum direction, or separate directional totals/limits. Maximum and
+separate modes require RX and TX provider seed values so the formula remains
+exact when the dominant direction changes. No custom billing expression is
+accepted.
+
 ## Finding engine and UI
 
 The current engine emits stable versioned evidence for suspicious writable-path
 executables, deleted executables, sustained high CPU heuristics, newly listening
 ports, and reduced collector coverage. Findings contain severity, confidence,
 first/last seen, recurrence count, evidence, explanation, manual verification,
-and a coverage caveat. It never labels a server clean or safe.
+and a coverage caveat. Subject-specific rules retain at most 32 normalized,
+hashed series per server/rule/version plus one aggregate overflow series, so PID
+or port churn cannot grow the findings table without bound. It never labels a
+server clean or safe.
 
 The embedded Preact/TypeScript UI uses paginated fleet queries and progressive
 server tabs. It includes overview, fleet, security, traffic, events, settings,
 resources, privacy-preserving processes, listeners, findings, inventory,
 operator audit, and traffic seed/rule/adjustment workflows. Temporary detail
 leases have a countdown, response-byte measurement, and early cancellation.
+Traffic includes provider-timezone cycle history and append-only adjustment
+detail; resources include bounded historical trends.
 Themes, density, keyboard focus, reduced motion, explicit states, and 390 px
 layouts are built in.
 

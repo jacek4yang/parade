@@ -188,6 +188,46 @@ The UI must show the components separately:
 
 Do not show only a single unexplained number.
 
+### Provider billing modes
+
+The rule uses a closed, versioned billing-mode enum. It never accepts an
+operator formula, expression, script, or provider-supplied code:
+
+- `sum`: provider-billed usage is the combined seed plus subsequent inbound
+  and outbound observations;
+- `inbound_only`: only the inbound provider seed and subsequent inbound
+  observations are billed;
+- `outbound_only`: only the outbound provider seed and subsequent outbound
+  observations are billed;
+- `max_direction`: usage is the greater of the current inbound and outbound
+  directional totals;
+- `separate_directions`: inbound and outbound totals and limits remain
+  independent. Their sum may be shown for information, but must not be labeled
+  as a provider-billed total.
+
+`max_direction` and `separate_directions` require both provider directional
+values at the seed checkpoint. A combined seed is insufficient for
+`max_direction`: the initially smaller direction can later become larger, and
+Linux deltas alone cannot reconstruct its provider-side starting value. Parade
+must reject that ambiguous input instead of estimating silently.
+
+For directional provider seeds `seed_rx` and `seed_tx`, and locally observed
+deltas `delta_rx` and `delta_tx`, the pre-adjustment formulas are:
+
+```text
+sum                 = seed_combined + delta_rx + delta_tx
+inbound_only        = seed_rx + delta_rx
+outbound_only       = seed_tx + delta_tx
+max_direction       = max(seed_rx + delta_rx, seed_tx + delta_tx)
+separate inbound    = seed_rx + delta_rx
+separate outbound   = seed_tx + delta_tx
+```
+
+Combined-total adjustments apply only to the first four modes. Separate-mode
+adjustments must select inbound or outbound and preserve both audit trails.
+Every mode still uses immutable seeds, append-only adjustments, exact Agent
+checkpoints, automatic calendar rollover, and visible uncertainty.
+
 ## Raw-counter accumulation algorithm
 
 Persist Agent-side state atomically.

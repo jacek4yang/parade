@@ -7,6 +7,7 @@ use parade_common::{
 };
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
@@ -49,7 +50,13 @@ impl Collector {
         self.root.join(path.trim_start_matches('/'))
     }
     fn read(&self, path: &str) -> Option<String> {
-        fs::read_to_string(self.path(path)).ok()
+        // Procfs files are expected to be small, but the host controls their
+        // apparent size. Bound every read so a pathological mount/interface
+        // table cannot grow Agent memory without limit.
+        let file = fs::File::open(self.path(path)).ok()?;
+        let mut bytes = Vec::new();
+        file.take(1024 * 1024).read_to_end(&mut bytes).ok()?;
+        String::from_utf8(bytes).ok()
     }
 
     pub fn cpu_sample(&self) -> Option<CpuSample> {
@@ -149,7 +156,12 @@ impl Collector {
         sample.psi_io = self.psi("proc/pressure/io");
         (sample.tcp, sample.udp) = self.socket_counts();
         if self.root == Path::new("/") {
-            (sample.disk_total, sample.disk_used) = self.disks();
+            (
+                sample.disk_total,
+                sample.disk_used,
+                sample.disk_inodes_total,
+                sample.disk_inodes_used,
+            ) = self.disks();
         }
         sample
     }
@@ -180,23 +192,27 @@ impl Collector {
         }
         (tcp, udp)
     }
-    fn disks(&self) -> (u64, u64) {
+    fn disks(&self) -> (u64, u64, u64, u64) {
         let Some(mounts) = self.read("proc/mounts") else {
-            return (0, 0);
+            return (0, 0, 0, 0);
         };
         let mut devices = HashSet::new();
-        let (mut total, mut used) = (0u64, 0u64);
+        let (mut total, mut used, mut inodes, mut inodes_used) = (0u64, 0u64, 0u64, 0u64);
         for line in mounts.lines() {
             let fields: Vec<_> = line.split_whitespace().collect();
             if fields.len() < 3 || !fields[0].starts_with('/') || !devices.insert(fields[0]) {
                 continue;
             }
-            if let Some((size, free)) = syscall::statfs_bytes(fields[1]) {
-                total = total.saturating_add(size);
-                used = used.saturating_add(size.saturating_sub(free));
+            if let Some(capacity) = syscall::statfs_capacity(fields[1]) {
+                total = total.saturating_add(capacity.total_bytes);
+                used =
+                    used.saturating_add(capacity.total_bytes.saturating_sub(capacity.free_bytes));
+                inodes = inodes.saturating_add(capacity.total_inodes);
+                inodes_used = inodes_used
+                    .saturating_add(capacity.total_inodes.saturating_sub(capacity.free_inodes));
             }
         }
-        (total, used)
+        (total, used, inodes, inodes_used)
     }
 
     pub fn interfaces(
@@ -256,7 +272,14 @@ impl Collector {
                 selected,
             });
         }
-        result.sort_by(|a, b| a.name.cmp(&b.name));
+        // Selected accounting interfaces take priority when a host exposes a
+        // very large number of ephemeral container devices.
+        result.sort_by(|a, b| {
+            b.selected
+                .cmp(&a.selected)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        result.truncate(parade_common::MAX_INTERFACES);
         result
     }
     fn default_interfaces(&self) -> Set {
@@ -271,6 +294,9 @@ impl Collector {
                     set.insert(fields[0].to_owned());
                 }
             }
+        }
+        if let Some(routes) = self.read("proc/net/ipv6_route") {
+            add_ipv6_default_interfaces(&routes, &mut set);
         }
         Set(set)
     }
@@ -354,14 +380,12 @@ impl Collector {
                 suspicious_writable_path: suspicious,
                 package_ownership: PackageOwnership::Unknown,
             });
+            if output.len() > MAX_PROCESSES * 2 {
+                output.sort_by(process_rank);
+                output.truncate(MAX_PROCESSES);
+            }
         }
-        output.sort_by(|a, b| {
-            b.suspicious_writable_path
-                .cmp(&a.suspicious_writable_path)
-                .then_with(|| b.deleted_executable.cmp(&a.deleted_executable))
-                .then_with(|| b.cpu_ticks.cmp(&a.cpu_ticks))
-                .then_with(|| a.pid.cmp(&b.pid))
-        });
+        output.sort_by(process_rank);
         output.truncate(MAX_PROCESSES);
         output
     }
@@ -390,34 +414,54 @@ impl Collector {
                 };
                 output.push(ListenerSummary {
                     protocol: protocol.into(),
-                    local_address: address.into(),
+                    local_address: decode_proc_address(protocol, address),
                     port,
                     uid: fields.get(7).and_then(|v| v.parse().ok()),
                     inode: fields.get(9).and_then(|v| v.parse().ok()),
                 });
+                if output.len() > MAX_LISTENERS * 2 {
+                    sort_and_bound_listeners(&mut output);
+                }
             }
         }
-        output.sort_by(|a, b| {
-            a.protocol
-                .cmp(&b.protocol)
-                .then(a.port.cmp(&b.port))
-                .then(a.local_address.cmp(&b.local_address))
-        });
-        output.dedup_by(|a, b| {
-            a.protocol == b.protocol && a.port == b.port && a.local_address == b.local_address
-        });
-        output.truncate(MAX_LISTENERS);
+        sort_and_bound_listeners(&mut output);
         output
     }
 
     pub fn coverage(&self) -> Vec<CoverageItem> {
         vec![
             self.coverage_item("resources", "proc/stat"),
-            self.coverage_item("traffic", "proc/net/dev"),
+            self.traffic_coverage(),
             self.coverage_item("processes", "proc"),
             self.coverage_item("listeners", "proc/net/tcp"),
             self.coverage_item("psi", "proc/pressure/cpu"),
         ]
+    }
+    fn traffic_coverage(&self) -> CoverageItem {
+        let parseable = self.read("proc/net/dev").is_some_and(|value| {
+            value.lines().skip(2).any(|line| {
+                line.split_once(':').is_some_and(|(_, fields)| {
+                    fields
+                        .split_whitespace()
+                        .filter_map(|v| v.parse::<u64>().ok())
+                        .count()
+                        >= 16
+                })
+            })
+        });
+        CoverageItem {
+            collector: "traffic".into(),
+            status: if parseable {
+                Confidence::High
+            } else {
+                Confidence::Unsupported
+            },
+            detail: if parseable {
+                "available".into()
+            } else {
+                "proc/net/dev is unavailable or malformed".into()
+            },
+        }
     }
     fn coverage_item(&self, name: &str, path: &str) -> CoverageItem {
         let ok = self.path(path).exists();
@@ -437,7 +481,63 @@ impl Collector {
     }
 }
 
+fn process_rank(a: &ProcessSummary, b: &ProcessSummary) -> std::cmp::Ordering {
+    b.suspicious_writable_path
+        .cmp(&a.suspicious_writable_path)
+        .then_with(|| b.deleted_executable.cmp(&a.deleted_executable))
+        .then_with(|| b.cpu_ticks.cmp(&a.cpu_ticks))
+        .then_with(|| a.pid.cmp(&b.pid))
+}
+
+fn sort_and_bound_listeners(output: &mut Vec<ListenerSummary>) {
+    output.sort_by(|a, b| {
+        a.protocol
+            .cmp(&b.protocol)
+            .then(a.port.cmp(&b.port))
+            .then(a.local_address.cmp(&b.local_address))
+    });
+    output.dedup_by(|a, b| {
+        a.protocol == b.protocol && a.port == b.port && a.local_address == b.local_address
+    });
+    output.truncate(MAX_LISTENERS);
+}
+
 struct Set(HashSet<String>);
+fn add_ipv6_default_interfaces(routes: &str, output: &mut HashSet<String>) {
+    for line in routes.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() >= 10
+            && fields[0].len() == 32
+            && fields[0].bytes().all(|byte| byte == b'0')
+            && fields[1] == "00"
+            && !fields[9].is_empty()
+        {
+            output.insert(fields[9].to_owned());
+        }
+    }
+}
+
+fn decode_proc_address(protocol: &str, encoded: &str) -> String {
+    if protocol.ends_with('6') && encoded.len() == 32 {
+        let mut bytes = [0u8; 16];
+        for (index, chunk) in encoded.as_bytes().chunks_exact(8).enumerate() {
+            let Ok(chunk) = std::str::from_utf8(chunk) else {
+                return encoded.into();
+            };
+            let Ok(word) = u32::from_str_radix(chunk, 16) else {
+                return encoded.into();
+            };
+            bytes[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        return std::net::Ipv6Addr::from(bytes).to_string();
+    }
+    if encoded.len() == 8 {
+        if let Ok(word) = u32::from_str_radix(encoded, 16) {
+            return std::net::Ipv4Addr::from(word.to_le_bytes()).to_string();
+        }
+    }
+    encoded.into()
+}
 fn excluded(name: &str) -> bool {
     [
         "lo",
@@ -484,5 +584,19 @@ mod tests {
             .iter()
             .all(|p| !p.executable.contains("SECRET_SENTINEL")));
         assert!(processes.iter().any(|p| p.suspicious_writable_path));
+    }
+    #[test]
+    fn ipv6_only_default_routes_and_proc_addresses_are_decoded() {
+        let mut interfaces = HashSet::new();
+        add_ipv6_default_interfaces(
+            "00000000000000000000000000000000 00 00000000000000000000000000000000 00 20010DB8000000000000000000000001 00000400 00000000 00000000 00000001 ens3",
+            &mut interfaces,
+        );
+        assert!(interfaces.contains("ens3"));
+        assert_eq!(decode_proc_address("tcp", "0100007F"), "127.0.0.1");
+        assert_eq!(
+            decode_proc_address("tcp6", "00000000000000000000000001000000"),
+            "::1"
+        );
     }
 }

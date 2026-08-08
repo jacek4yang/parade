@@ -245,6 +245,55 @@ const MIGRATION_3: &str = r#"
 ALTER TABLE agent_credentials ADD COLUMN traffic_policy_version INTEGER NOT NULL DEFAULT 0;
 "#;
 
+const MIGRATION_4: &str = r#"
+ALTER TABLE billing_cycle_rule ADD COLUMN billing_mode TEXT NOT NULL DEFAULT 'sum' CHECK(billing_mode IN ('sum','inbound_only','outbound_only','max_direction','separate_directions'));
+ALTER TABLE billing_cycle_rule ADD COLUMN rx_limit_bytes INTEGER CHECK(rx_limit_bytes IS NULL OR rx_limit_bytes >= 0);
+ALTER TABLE billing_cycle_rule ADD COLUMN tx_limit_bytes INTEGER CHECK(tx_limit_bytes IS NULL OR tx_limit_bytes >= 0);
+ALTER TABLE traffic_seed ADD COLUMN directional_seed INTEGER NOT NULL DEFAULT 0 CHECK(directional_seed IN (0,1));
+ALTER TABLE traffic_adjustment ADD COLUMN direction TEXT NOT NULL DEFAULT 'billed' CHECK(direction IN ('billed','inbound','outbound'));
+CREATE INDEX traffic_rollup_retention ON traffic_rollup(interval_end);
+CREATE INDEX events_retention ON events(occurred_at);
+CREATE INDEX process_retention ON process_summaries(observed_at);
+CREATE INDEX socket_retention ON socket_summaries(observed_at);
+CREATE INDEX checkpoint_retention ON traffic_observed_checkpoint(checkpoint_at);
+CREATE INDEX lease_retention ON observation_leases(state,expires_at);
+CREATE INDEX enrollment_retention ON enrollment_tokens(expires_at,used_at);
+ALTER TABLE security_findings ADD COLUMN series_key TEXT NOT NULL DEFAULT 'legacy';
+UPDATE security_findings SET series_key=printf('legacy-%d',id);
+CREATE TEMP TABLE migration4_finding_rank AS
+SELECT id,server_id,rule_id,rule_version,
+       ROW_NUMBER() OVER (
+           PARTITION BY server_id,rule_id,rule_version
+           ORDER BY last_seen DESC,id DESC
+       ) AS rank
+FROM security_findings;
+UPDATE security_findings AS keeper
+SET first_seen=(
+        SELECT MIN(f.first_seen) FROM security_findings f
+        JOIN migration4_finding_rank r ON r.id=f.id
+        WHERE r.server_id=keeper.server_id AND r.rule_id=keeper.rule_id
+          AND r.rule_version=keeper.rule_version AND r.rank>=33
+    ),
+    last_seen=(
+        SELECT MAX(f.last_seen) FROM security_findings f
+        JOIN migration4_finding_rank r ON r.id=f.id
+        WHERE r.server_id=keeper.server_id AND r.rule_id=keeper.rule_id
+          AND r.rule_version=keeper.rule_version AND r.rank>=33
+    ),
+    occurrence_count=(
+        SELECT SUM(f.occurrence_count) FROM security_findings f
+        JOIN migration4_finding_rank r ON r.id=f.id
+        WHERE r.server_id=keeper.server_id AND r.rule_id=keeper.rule_id
+          AND r.rule_version=keeper.rule_version AND r.rank>=33
+    ),
+    series_key='overflow'
+WHERE keeper.id IN (SELECT id FROM migration4_finding_rank WHERE rank=33);
+DELETE FROM security_findings
+WHERE id IN (SELECT id FROM migration4_finding_rank WHERE rank>33);
+DROP TABLE migration4_finding_rank;
+CREATE UNIQUE INDEX one_finding_series ON security_findings(server_id,rule_id,rule_version,series_key);
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     path: Arc<PathBuf>,
@@ -297,6 +346,8 @@ impl Database {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "busy_timeout", 5_000)?;
+        conn.pragma_update(None, "wal_autocheckpoint", 1_000)?;
+        conn.pragma_update(None, "journal_size_limit", 16 * 1024 * 1024)?;
         Ok(conn)
     }
 
@@ -615,6 +666,12 @@ impl Database {
         for interface in &report.body.traffic.interfaces {
             tx.execute("INSERT INTO traffic_interface_state(server_id,identity,interface_name,boot_id,last_raw_rx,last_raw_tx,last_sample_at,active,selected) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8) ON CONFLICT(server_id,identity) DO UPDATE SET interface_name=excluded.interface_name,boot_id=excluded.boot_id,last_raw_rx=excluded.last_raw_rx,last_raw_tx=excluded.last_raw_tx,last_sample_at=excluded.last_sample_at,active=1,selected=excluded.selected", params![report.server_id,interface.identity,interface.name,report.body.traffic.boot_id,to_i64(interface.rx_bytes)?,to_i64(interface.tx_bytes)?,report.body.traffic.sampled_at,interface.selected])?;
         }
+        // Historical interface evidence remains in bounded traffic rollups;
+        // the mutable baseline needs only the identities in the latest report.
+        tx.execute(
+            "DELETE FROM traffic_interface_state WHERE server_id=?1 AND active=0",
+            [&report.server_id],
+        )?;
         crate::findings::evaluate(&tx, report, received_at)?;
         crate::traffic::ensure_cycle_tx(
             &tx,
@@ -680,43 +737,52 @@ impl Database {
     /// cycle history, findings, tombstones, identities and audit events are
     /// deliberately excluded because they are durable evidence.
     pub fn prune_operational_history(&self, now: i64) -> Result<(), DbError> {
+        const BATCH: i64 = 10_000;
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
-            "DELETE FROM report_messages WHERE received_at < ?1",
-            [now - 86_400],
+            "DELETE FROM report_messages WHERE rowid IN (SELECT rowid FROM report_messages WHERE received_at < ?1 LIMIT ?2)",
+            params![now - 86_400, BATCH],
         )?;
         tx.execute(
-            "DELETE FROM resource_rollups WHERE interval_end < ?1",
-            [now - 30 * 86_400],
+            "DELETE FROM resource_rollups WHERE rowid IN (SELECT rowid FROM resource_rollups WHERE interval_end < ?1 LIMIT ?2)",
+            params![now - 30 * 86_400, BATCH],
         )?;
         tx.execute(
-            "DELETE FROM traffic_rollup WHERE interval_end < ?1",
-            [now - 90 * 86_400],
+            "DELETE FROM traffic_rollup WHERE rowid IN (SELECT rowid FROM traffic_rollup WHERE interval_end < ?1 LIMIT ?2)",
+            params![now - 90 * 86_400, BATCH],
         )?;
         tx.execute(
-            "DELETE FROM events WHERE occurred_at < ?1",
-            [now - 180 * 86_400],
+            "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE occurred_at < ?1 LIMIT ?2)",
+            params![now - 180 * 86_400, BATCH],
         )?;
         tx.execute(
-            "DELETE FROM process_summaries WHERE observed_at < ?1 AND (server_id,observed_at) NOT IN (SELECT server_id,MAX(observed_at) FROM process_summaries GROUP BY server_id)",
-            [now - 7 * 86_400],
+            "DELETE FROM process_summaries WHERE rowid IN (SELECT old.rowid FROM process_summaries old WHERE old.observed_at < ?1 AND old.observed_at != (SELECT MAX(latest.observed_at) FROM process_summaries latest WHERE latest.server_id=old.server_id) LIMIT ?2)",
+            params![now - 7 * 86_400, BATCH],
         )?;
         tx.execute(
-            "DELETE FROM socket_summaries WHERE observed_at < ?1 AND (server_id,observed_at) NOT IN (SELECT server_id,MAX(observed_at) FROM socket_summaries GROUP BY server_id)",
-            [now - 7 * 86_400],
+            "DELETE FROM socket_summaries WHERE rowid IN (SELECT old.rowid FROM socket_summaries old WHERE old.observed_at < ?1 AND old.observed_at != (SELECT MAX(latest.observed_at) FROM socket_summaries latest WHERE latest.server_id=old.server_id) LIMIT ?2)",
+            params![now - 7 * 86_400, BATCH],
         )?;
         tx.execute(
-            "DELETE FROM sessions WHERE expires_at < ?1 OR revoked_at < ?1",
-            [now - 7 * 86_400],
+            "DELETE FROM sessions WHERE rowid IN (SELECT rowid FROM sessions WHERE expires_at < ?1 OR revoked_at < ?1 LIMIT ?2)",
+            params![now - 7 * 86_400, BATCH],
         )?;
         tx.execute(
             "UPDATE observation_leases SET state='expired' WHERE state='active' AND expires_at<=?1",
             [now],
         )?;
         tx.execute(
-            "DELETE FROM traffic_observed_checkpoint WHERE checkpoint_at < ?1 AND checkpoint_at NOT IN (SELECT checkpoint_at FROM traffic_seed) AND checkpoint_at != (SELECT MAX(newer.checkpoint_at) FROM traffic_observed_checkpoint newer WHERE newer.server_id=traffic_observed_checkpoint.server_id)",
-            [now - 400 * 86_400],
+            "DELETE FROM traffic_observed_checkpoint WHERE rowid IN (SELECT old.rowid FROM traffic_observed_checkpoint old WHERE old.checkpoint_at < ?1 AND NOT EXISTS (SELECT 1 FROM traffic_seed seed JOIN billing_cycle_instance cycle ON cycle.id=seed.cycle_id WHERE cycle.server_id=old.server_id AND seed.checkpoint_at=old.checkpoint_at) AND old.checkpoint_at != (SELECT MAX(newer.checkpoint_at) FROM traffic_observed_checkpoint newer WHERE newer.server_id=old.server_id) LIMIT ?2)",
+            params![now - 400 * 86_400, BATCH],
+        )?;
+        tx.execute(
+            "DELETE FROM observation_leases WHERE rowid IN (SELECT rowid FROM observation_leases WHERE state!='active' AND expires_at < ?1 LIMIT ?2)",
+            params![now - 30 * 86_400, BATCH],
+        )?;
+        tx.execute(
+            "DELETE FROM enrollment_tokens WHERE rowid IN (SELECT rowid FROM enrollment_tokens WHERE expires_at < ?1 AND (used_at IS NOT NULL OR expires_at < ?2) LIMIT ?3)",
+            params![now - 7 * 86_400, now - 30 * 86_400, BATCH],
         )?;
         tx.commit()?;
         Ok(())
@@ -730,7 +796,7 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
         [],
         |r| r.get(0),
     )?;
-    if version > 3 {
+    if version > 4 {
         return Err(DbError::Invalid(
             "database schema is newer than this Parade Hub binary",
         ));
@@ -760,6 +826,16 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
         tx.execute_batch(MIGRATION_3)?;
         tx.execute(
             "INSERT INTO schema_migrations(version,applied_at) VALUES(3,strftime('%s','now'))",
+            [],
+        )?;
+        tx.commit()?;
+        version = 3;
+    }
+    if version < 4 {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(MIGRATION_4)?;
+        tx.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(4,strftime('%s','now'))",
             [],
         )?;
         tx.commit()?;
@@ -941,7 +1017,7 @@ mod tests {
             conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         assert_eq!(
             conn.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0))
@@ -955,17 +1031,173 @@ mod tests {
     }
 
     #[test]
+    fn finding_subject_churn_is_bounded_with_an_overflow_series() {
+        let (db, path) = temp_db();
+        let conn = db.connection().unwrap();
+        conn.execute(
+            "INSERT INTO servers(id,name,status,created_at) VALUES('bounded','Bounded','active',1)",
+            [],
+        )
+        .unwrap();
+        let key = SigningKey::from_bytes(&[7; 32]);
+        for index in 0..40 {
+            let mut value = report("bounded", "agent", index + 1, index as i64 + 10, &key);
+            value.body.processes = Some(vec![ProcessSummary {
+                executable: format!("/tmp/churn-{index}"),
+                suspicious_writable_path: true,
+                ..Default::default()
+            }]);
+            crate::findings::evaluate(&conn, &value, index as i64 + 10).unwrap();
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM security_findings WHERE server_id='bounded' AND rule_id='PROC_WRITABLE_EXEC'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            33
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT occurrence_count FROM security_findings WHERE server_id='bounded' AND rule_id='PROC_WRITABLE_EXEC' AND series_key='overflow'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            8
+        );
+        let mut cleared = report("bounded", "agent", 41, 100, &key);
+        cleared.body.processes = Some(vec![]);
+        crate::findings::evaluate(&conn, &cleared, 100).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM security_findings WHERE server_id='bounded' AND rule_id='PROC_WRITABLE_EXEC' AND state='active'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn newer_database_schema_fails_closed() {
         let (db, path) = temp_db();
         db.connection()
             .unwrap()
             .execute(
-                "INSERT INTO schema_migrations(version,applied_at) VALUES(4,1)",
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(5,1)",
                 [],
             )
             .unwrap();
         drop(db);
         assert!(matches!(Database::open(&path), Err(DbError::Invalid(_))));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_four_preserves_legacy_combined_accounting() {
+        let path = std::env::temp_dir().join(format!("parade-db-v3-{}.sqlite", random()));
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);")
+            .unwrap();
+        for (version, sql) in [(1, MIGRATION_1), (2, MIGRATION_2), (3, MIGRATION_3)] {
+            let tx = conn.transaction().unwrap();
+            tx.execute_batch(sql).unwrap();
+            tx.execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,1)",
+                [version],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        conn.execute(
+            "INSERT INTO servers(id,name,status,created_at) VALUES('legacy','Legacy','active',1)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO billing_cycle_rule(server_id,timezone,anchor_day,anchor_time,interface_policy_json,traffic_limit_bytes,enabled,version,updated_at,updated_by) VALUES('legacy','UTC',1,'00:00','{\"mode\":\"auto\"}',1000,1,1,1,'admin')", []).unwrap();
+        conn.execute("INSERT INTO billing_cycle_instance(id,server_id,start_at,end_at,starting_observed_rx,starting_observed_tx,state,confidence,created_at) VALUES(1,'legacy',100,1000,10,20,'open','high',100)", []).unwrap();
+        conn.execute("INSERT INTO traffic_observed_checkpoint(server_id,observed_rx,observed_tx,checkpoint_at,agent_sequence,confidence,last_boot_id) VALUES('legacy',10,20,200,1,'high','boot')", []).unwrap();
+        conn.execute("INSERT INTO traffic_seed(cycle_id,rx_bytes,tx_bytes,combined_bytes,effective_at,checkpoint_at,observed_rx_at_seed,observed_tx_at_seed,operator,note,created_at) VALUES(1,0,0,100,200,200,10,20,'admin','legacy seed',201)", []).unwrap();
+        conn.execute("INSERT INTO traffic_adjustment(cycle_id,signed_bytes,effective_at,reason,operator,created_at) VALUES(1,-10,200,'legacy correction','admin',202)", []).unwrap();
+        conn.execute_batch("INSERT INTO security_findings(server_id,rule_id,rule_version,severity,confidence,first_seen,last_seen,occurrence_count,evidence,explanation,verification) VALUES('legacy','RESOURCE_SUSTAINED_CPU',1,'review','medium',100,200,2,'first','why','verify'); INSERT INTO security_findings(server_id,rule_id,rule_version,severity,confidence,first_seen,last_seen,occurrence_count,evidence,explanation,verification) VALUES('legacy','RESOURCE_SUSTAINED_CPU',1,'review','medium',300,400,3,'latest','why','verify');").unwrap();
+        drop(conn);
+
+        let db = Database::open(&path).unwrap();
+        let usage = db.traffic_usage("legacy").unwrap();
+        assert_eq!(usage.billing_mode, crate::traffic::TrafficBillingMode::Sum);
+        assert_eq!(usage.seed_bytes, 100);
+        assert_eq!(usage.adjustment_bytes, -10);
+        assert_eq!(usage.total_bytes, 90);
+        assert!(!usage.directional_seed_known);
+        let preserved_findings: (i64, i64) = db
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*),SUM(occurrence_count) FROM security_findings WHERE server_id='legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved_findings, (2, 5));
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn retention_is_batched_and_checkpoint_seed_matching_is_server_scoped() {
+        let (db, path) = temp_db();
+        let now = 50_000_000;
+        let conn = db.connection().unwrap();
+        conn.execute_batch(
+            "WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value+1 FROM n WHERE value<=10000) INSERT INTO report_messages(message_id,server_id,agent_id,sequence,received_at) SELECT printf('old-%d',value),'s','a',value,1 FROM n;",
+        )
+        .unwrap();
+        for server in ["seeded", "other"] {
+            conn.execute(
+                "INSERT INTO servers(id,name,status,created_at) VALUES(?1,?1,'active',1)",
+                [server],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO billing_cycle_rule(server_id,timezone,anchor_day,anchor_time,interface_policy_json,traffic_limit_bytes,enabled,version,updated_at,updated_by,billing_mode) VALUES(?1,'UTC',1,'00:00','{\"mode\":\"auto\"}',NULL,1,1,1,'admin','sum')", [server]).unwrap();
+            conn.execute("INSERT INTO billing_cycle_instance(server_id,start_at,end_at,starting_observed_rx,starting_observed_tx,state,confidence,created_at) VALUES(?1,1,99999999,0,0,'open','high',1)", [server]).unwrap();
+            conn.execute("INSERT INTO traffic_observed_checkpoint(server_id,observed_rx,observed_tx,checkpoint_at,agent_sequence,confidence,last_boot_id) VALUES(?1,1,1,10,1,'high','boot')", [server]).unwrap();
+            conn.execute("INSERT INTO traffic_observed_checkpoint(server_id,observed_rx,observed_tx,checkpoint_at,agent_sequence,confidence,last_boot_id) VALUES(?1,2,2,20,2,'high','boot')", [server]).unwrap();
+        }
+        let seeded_cycle: i64 = conn
+            .query_row(
+                "SELECT id FROM billing_cycle_instance WHERE server_id='seeded'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute("INSERT INTO traffic_seed(cycle_id,rx_bytes,tx_bytes,combined_bytes,effective_at,checkpoint_at,observed_rx_at_seed,observed_tx_at_seed,operator,note,created_at,directional_seed) VALUES(?1,0,0,5,10,10,1,1,'admin','seed',1,0)", [seeded_cycle]).unwrap();
+        drop(conn);
+
+        db.prune_operational_history(now).unwrap();
+        let conn = db.connection().unwrap();
+        let first_remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM report_messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(first_remaining, 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM traffic_observed_checkpoint WHERE server_id='seeded' AND checkpoint_at=10", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM traffic_observed_checkpoint WHERE server_id='other' AND checkpoint_at=10", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+        drop(conn);
+        db.prune_operational_history(now).unwrap();
+        assert_eq!(
+            db.connection()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM report_messages", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(db);
         let _ = std::fs::remove_file(path);
     }
 
@@ -1053,6 +1285,30 @@ mod tests {
             reopened.ingest_verified(&accepted, "192.0.2.1", 12, 256),
             Err(DbError::Duplicate)
         ));
+        let mut recurrence_body = report("a", agent_a, 2, 20, &key_a).body;
+        // The first accepted report delivered billing policy v1. A restarted
+        // Agent must persist and echo that cursor; replay durability must not
+        // be tested by bypassing the policy-version invariant.
+        recurrence_body.traffic.policy_version = 1;
+        recurrence_body.processes = Some(vec![ProcessSummary {
+            pid: 42,
+            executable: "/tmp/unowned-worker".into(),
+            suspicious_writable_path: true,
+            ..Default::default()
+        }]);
+        let recurrence = SignedReport::new(
+            "a".into(),
+            agent_a.into(),
+            20,
+            2,
+            parade_common::sha256_hex(b"a:agent-a:2"),
+            recurrence_body,
+            &key_a,
+        )
+        .unwrap();
+        reopened
+            .ingest_verified(&recurrence, "192.0.2.1", 20, 256)
+            .unwrap();
         assert_eq!(
             reopened
                 .connection()
@@ -1060,17 +1316,25 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM resource_rollups", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            1
+            2
         );
+        let conn = reopened.connection().unwrap();
         assert_eq!(
-            reopened
-                .connection()
-                .unwrap()
-                .query_row("SELECT COUNT(*) FROM security_findings", [], |r| r
-                    .get::<_, i64>(0))
+            conn.query_row("SELECT COUNT(*) FROM security_findings", [], |r| r
+                .get::<_, i64>(0))
                 .unwrap(),
             1
         );
+        let (occurrences, evidence): (i64, String) = conn
+            .query_row(
+                "SELECT occurrence_count,evidence FROM security_findings WHERE server_id='a' AND rule_id='PROC_WRITABLE_EXEC'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(occurrences, 2);
+        assert!(evidence.contains("pid=42"));
+        drop(conn);
         reopened
             .tombstone_server("a", 13, "admin", "retired host")
             .unwrap();
@@ -1154,6 +1418,9 @@ mod tests {
                 selected_interfaces: vec![],
                 excluded_interfaces: vec!["wg0".into()],
                 traffic_limit_bytes: None,
+                billing_mode: crate::traffic::TrafficBillingMode::Sum,
+                rx_limit_bytes: None,
+                tx_limit_bytes: None,
             },
             11,
             "admin",

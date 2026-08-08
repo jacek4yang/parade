@@ -1,0 +1,197 @@
+name: Signed release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a version-matched tag on the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          [[ "${GITHUB_REF_NAME}" == "v${version}" ]] || {
+            echo "tag ${GITHUB_REF_NAME} does not match workspace version v${version}" >&2
+            exit 1
+          }
+          git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          git merge-base --is-ancestor "${GITHUB_SHA}" "refs/remotes/origin/${DEFAULT_BRANCH}" || {
+            echo "release tag commit is not reachable from ${DEFAULT_BRANCH}" >&2
+            exit 1
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            x86_64-unknown-linux-musl,
+            aarch64-unknown-linux-musl,
+            armv7-unknown-linux-musleabihf,
+            x86_64-unknown-linux-gnu,
+            aarch64-unknown-linux-gnu,
+            armv7-unknown-linux-gnueabihf,
+            riscv64gc-unknown-linux-gnu
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          cargo install cargo-audit --locked
+          cargo install cross --version 0.2.5 --locked
+
+      - name: Verify frontend and build embedded assets
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run format:check
+          npm run lint
+          npm run typecheck
+          npm test
+          npm audit --audit-level=high
+          npx playwright install --with-deps chromium
+          npm run build
+
+      - name: Verify Rust, browser flows, and installers
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-features
+          cargo audit
+          bash -n scripts/*.sh hub/assets/install.sh
+          shellcheck scripts/*.sh hub/assets/install.sh
+          scripts/test-installer-integrity.sh
+          scripts/performance-gate.sh
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          npm --prefix frontend run test:e2e
+
+      - name: Build unsigned Agent distribution
+        run: scripts/build-agents.sh --unsigned --dist release-agent-dist
+
+      - name: Require every advertised Agent architecture
+        run: |
+          set -euo pipefail
+          for target in \
+            x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl \
+            armv7-unknown-linux-musleabihf \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            armv7-unknown-linux-gnueabihf \
+            riscv64gc-unknown-linux-gnu; do
+            test -x "release-agent-dist/${target}/parade-agent"
+          done
+
+      - name: Build static Hub binaries
+        run: |
+          cross build --release --locked -p parade-hub --all-features --target x86_64-unknown-linux-musl
+          cross build --release --locked -p parade-hub --all-features --target aarch64-unknown-linux-musl
+
+      - name: Stage unsigned release artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p release-staging/release
+          mv release-agent-dist release-staging/agent-dist
+          install -m 0755 target/x86_64-unknown-linux-musl/release/parade-hub \
+            release-staging/release/parade-hub-x86_64-unknown-linux-musl
+          install -m 0755 target/aarch64-unknown-linux-musl/release/parade-hub \
+            release-staging/release/parade-hub-aarch64-unknown-linux-musl
+          install -m 0755 scripts/parade-install.sh release-staging/release/parade-install.sh
+          install -m 0755 scripts/parade-uninstall.sh release-staging/release/parade-uninstall.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-release-${{ github.sha }}
+          path: release-staging
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-publish:
+    needs: verify-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-release-${{ github.sha }}
+          path: release-staging
+
+      - name: Sign and verify release artifacts
+        env:
+          PARADE_RELEASE_SIGNING_KEY_B64: ${{ secrets.PARADE_RELEASE_SIGNING_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          [[ -n "${PARADE_RELEASE_SIGNING_KEY_B64}" ]] || {
+            echo "repository secret PARADE_RELEASE_SIGNING_KEY_B64 is required" >&2
+            exit 1
+          }
+          key_path="${RUNNER_TEMP}/parade-release-signing.pem"
+          cleanup() { rm -f "${key_path}"; }
+          trap cleanup EXIT
+          printf '%s' "${PARADE_RELEASE_SIGNING_KEY_B64}" | base64 --decode >"${key_path}"
+          chmod 0600 "${key_path}"
+          openssl pkey -in "${key_path}" -text -noout | grep -q 'ED25519' || {
+            echo "release key must be Ed25519" >&2
+            exit 1
+          }
+
+          agent_dist=release-staging/agent-dist
+          release_dir=release-staging/release
+          openssl pkey -in "${key_path}" -pubout -out "${agent_dist}/release-public.pem"
+          openssl pkeyutl -sign -inkey "${key_path}" -rawin \
+            -in "${agent_dist}/SHA256SUMS" -out "${agent_dist}/SHA256SUMS.sig"
+          test "$(stat --format='%s' "${agent_dist}/SHA256SUMS.sig")" -eq 64
+          openssl pkeyutl -verify -pubin -inkey "${agent_dist}/release-public.pem" -rawin \
+            -in "${agent_dist}/SHA256SUMS" -sigfile "${agent_dist}/SHA256SUMS.sig"
+
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
+            --numeric-owner -C "${agent_dist}" -cf - . \
+            | gzip -n >"${release_dir}/parade-agent-dist.tar.gz"
+          install -m 0644 "${agent_dist}/release-public.pem" "${release_dir}/release-public.pem"
+          (
+            cd "${release_dir}"
+            sha256sum \
+              parade-hub-x86_64-unknown-linux-musl \
+              parade-hub-aarch64-unknown-linux-musl \
+              parade-agent-dist.tar.gz \
+              parade-install.sh \
+              parade-uninstall.sh \
+              release-public.pem >SHA256SUMS.release
+          )
+          openssl pkeyutl -sign -inkey "${key_path}" -rawin \
+            -in "${release_dir}/SHA256SUMS.release" \
+            -out "${release_dir}/SHA256SUMS.release.sig"
+          test "$(stat --format='%s' "${release_dir}/SHA256SUMS.release.sig")" -eq 64
+          openssl pkeyutl -verify -pubin -inkey "${release_dir}/release-public.pem" -rawin \
+            -in "${release_dir}/SHA256SUMS.release" \
+            -sigfile "${release_dir}/SHA256SUMS.release.sig"
+          (cd "${release_dir}" && sha256sum --check SHA256SUMS.release)
+          bash -n "${release_dir}/parade-install.sh" "${release_dir}/parade-uninstall.sh"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release-staging/release/* \
+            --verify-tag \
+            --title "Parade ${GITHUB_REF_NAME}" \
+            --generate-notes
