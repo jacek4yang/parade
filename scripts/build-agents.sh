@@ -98,15 +98,32 @@ build_one() {
   fi
   local src="${target_dir}/${target}/release/parade-agent"
   local dst="${DIST}/${target}/parade-agent"
-  mkdir -p "${DIST}/${target}"
-  cp "$src" "$dst"
+  if [ ! -x "$src" ]; then
+    echo "   ✗ ${target} did not produce an executable Agent at ${src}" >&2
+    return 1
+  fi
+  if ! mkdir -p "${DIST}/${target}"; then
+    echo "   ✗ could not create the staging directory for ${target}" >&2
+    return 1
+  fi
+  if ! cp "$src" "$dst"; then
+    echo "   ✗ could not stage the Agent for ${target}" >&2
+    return 1
+  fi
+  if [ ! -x "$dst" ]; then
+    echo "   ✗ staged Agent for ${target} is not executable" >&2
+    return 1
+  fi
   # Stripping is optional and explicitly reported when the host tool cannot
   # understand a foreign binary.
   if command -v strip >/dev/null 2>&1 && ! strip "$dst" 2>/dev/null; then
     echo "   note: strip does not support ${target}; keeping symbols"
   fi
   local size
-  size=$(du -h "$dst" | cut -f1)
+  if ! size=$(du -h "$dst" | cut -f1); then
+    echo "   ✗ could not measure the staged Agent for ${target}" >&2
+    return 1
+  fi
   echo "   ✓ ${dst} (${size})"
 }
 
