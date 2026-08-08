@@ -314,16 +314,18 @@ standard Ubuntu runner.
 ## Publication state
 
 - Origin: `git@github.com:jacek4yang/parade.git`
-- Base: `main` at the intentionally empty initialization commit `1d48c80`
+- Base: `main` at externally merged PR #1 commit `1542f8b`
 - Head: `codex/read-only-vps-observability`
+- Follow-up commits: `bd9d570` telemetry/accounting, `bb40322` bilingual UI,
+  `ac58d7a` signed release/deployment
 - Draft PR body: `PR_BODY.md`
 - Previous PR: https://github.com/jacek4yang/parade/pull/1 (externally merged)
-- Current draft PR: pending final commits and push
+- Current draft PR: https://github.com/jacek4yang/parade/pull/2
 - Merge state: prohibited; the new delivery will remain draft pending
   disposable-host validation.
 
 GitHub Actions run
 [30727221592](https://github.com/jacek4yang/parade/actions/runs/30727221592)
-passed on the earlier merged baseline, including RustSec. A new head CI run is
-required after this follow-up is pushed; its result will be recorded without
-claiming success early.
+passed on the earlier merged baseline, including RustSec. Draft PR #2 is pushed;
+its new head CI run is pending and will be recorded without claiming success
+early.
