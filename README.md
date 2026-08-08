@@ -115,11 +115,12 @@ open no Parade listener. A Hub behind NAT must have an operator-provided HTTPS
 origin reachable by every Agent; Parade never changes firewalls, routes, port
 forwards, VPNs, or tunnels.
 
-The Release workflow is triggered by a matching `v*` tag and requires the
-repository secret `PARADE_RELEASE_SIGNING_KEY_B64`. It publishes signed static
-Hub binaries, the multi-architecture Agent tree, checksums, and both installer
-scripts. It fails closed when the signing secret or a primary architecture is
-missing.
+The Release workflow is triggered by a matching `v*` tag and requires protected
+`signed-release` environment secrets `PARADE_RELEASE_SIGNING_KEY_B64` and
+`PARADE_RELEASE_PUBLIC_KEY_SHA256`. It publishes signed static Hub binaries,
+the multi-architecture Agent tree, checksums, and both installer scripts. It
+fails closed when the signing secret, the operator-pinned public-key digest or a
+primary architecture is missing.
 
 ## Build
 
@@ -194,9 +195,10 @@ sudo chmod -R u=rwX,g=rX,o= /var/lib/parade-dist
 
 Review the user-writable staging tree before copying it into the root-owned Hub
 tree; remove the staging directory afterward according to local policy. `cross`
-is required for the complete x86_64/aarch64/armv7/riscv64 musl+GNU tree; without
-it the script builds only an available host target and must not advertise absent
-architectures. Static musl is preferred, with GNU fallback. The Agent requires
+is required for the complete x86_64/aarch64/armv7 musl+GNU targets plus the
+riscv64 GNU target; without it the script builds only an available host target
+and must not advertise absent architectures. Static musl is preferred where it
+is published, with GNU fallback. The Agent requires
 Linux/systemd for the supported one-command install. Debian, Ubuntu, AlmaLinux,
 and Rocky Linux are the primary targets; unsupported collectors degrade with an
 explicit coverage reason.

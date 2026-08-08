@@ -30,7 +30,7 @@ select one explicit published tag and download every asset from that immutable
 tag without running it:
 
 ```bash
-tag=v0.1.0
+tag=v1.0.0
 release_base="https://github.com/jacek4yang/parade/releases/download/${tag}"
 curl -fLO "${release_base}/parade-install.sh"
 curl -fLO "${release_base}/SHA256SUMS.release"
@@ -50,13 +50,13 @@ sha256sum --check --ignore-missing SHA256SUMS.release
 less parade-install.sh
 ```
 
-Replace `v0.1.0` with the exact Release you intend to install. Do not combine
+Replace `v1.0.0` with the exact Release you intend to install. Do not combine
 files from different releases and do not continue after any failure. Run the
 reviewed local script with both the same tag and trusted key pin, so its later
 binary downloads cannot follow a changed `latest` pointer:
 
 ```bash
-tag=v0.1.0
+tag=v1.0.0
 sudo env \
   PARADE_VERSION="${tag}" \
   PARADE_RELEASE_KEY_SHA256='<trusted 64-hex digest>' \
@@ -64,9 +64,11 @@ sudo env \
 ```
 
 The first public signed Release cannot exist until the repository owner
-provisions `PARADE_RELEASE_SIGNING_KEY_B64` and publishes a version-matched
-`v*` tag reachable from the default branch. The workflow fails closed when
-signing material or a required architecture is absent.
+provisions `PARADE_RELEASE_SIGNING_KEY_B64` and the independently recorded
+`PARADE_RELEASE_PUBLIC_KEY_SHA256` in the protected `signed-release`
+environment, then publishes a version-matched `v*` tag reachable from the
+default branch. The workflow fails closed when signing material, its pinned
+public-key digest or a required architecture is absent.
 
 ## Hub installation and HTTPS
 
@@ -117,7 +119,7 @@ read -rsp 'Hub administrator password: ' PARADE_ADMIN_PASSWORD
 printf '\n'
 export PARADE_ADMIN_PASSWORD
 export PARADE_LANG=en
-export PARADE_VERSION=v0.1.0
+export PARADE_VERSION=v1.0.0
 export PARADE_PUBLIC_URL=https://parade.example.com
 export PARADE_RELEASE_KEY_SHA256='<trusted 64-hex digest>'
 sudo --preserve-env=PARADE_LANG,PARADE_VERSION,PARADE_PUBLIC_URL,PARADE_ADMIN_PASSWORD,PARADE_RELEASE_KEY_SHA256 \
@@ -191,7 +193,7 @@ authenticate. For high assurance, pin one tag and verify/review the script
 before running it locally:
 
 ```bash
-tag=v0.1.0
+tag=v1.0.0
 release_base="https://github.com/jacek4yang/parade/releases/download/${tag}"
 curl -fLO "${release_base}/parade-uninstall.sh"
 curl -fLO "${release_base}/SHA256SUMS.release"

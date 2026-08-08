@@ -27,7 +27,7 @@ Parade 自己的文件和服务；Hub 与 Agent 都不能操作另一台主机�
 从这个不可变标签下载全部文件，不要立即执行：
 
 ```bash
-tag=v0.1.0
+tag=v1.0.0
 release_base="https://github.com/jacek4yang/parade/releases/download/${tag}"
 curl -fLO "${release_base}/parade-install.sh"
 curl -fLO "${release_base}/SHA256SUMS.release"
@@ -46,21 +46,22 @@ sha256sum --check --ignore-missing SHA256SUMS.release
 less parade-install.sh
 ```
 
-把 `v0.1.0` 替换为准备安装的确切 Release。不要混用不同 Release 的文件，任何
+把 `v1.0.0` 替换为准备安装的确切 Release。不要混用不同 Release 的文件，任何
 一步失败都应停止。运行已审阅的本地脚本时同时固定同一标签和公钥摘要，避免后续
 二进制下载跟随已经切换的 `latest`：
 
 ```bash
-tag=v0.1.0
+tag=v1.0.0
 sudo env \
   PARADE_VERSION="${tag}" \
   PARADE_RELEASE_KEY_SHA256='<可信的64位十六进制摘要>' \
   bash parade-install.sh hub
 ```
 
-首个公开签名 Release 必须先由仓库所有者配置
-`PARADE_RELEASE_SIGNING_KEY_B64`，再发布版本一致且可从默认分支到达的 `v*`
-标签。签名材料或必要架构缺失时，工作流会失败关闭。
+首个公开签名 Release 必须先由仓库所有者在受保护的 `signed-release` Environment
+中配置 `PARADE_RELEASE_SIGNING_KEY_B64` 和独立留存的
+`PARADE_RELEASE_PUBLIC_KEY_SHA256`，再发布版本一致且可从默认分支到达的 `v*`
+标签。签名材料、公钥摘要或必要架构缺失时，工作流会失败关闭。
 
 ## Hub 安装与 HTTPS
 
@@ -106,7 +107,7 @@ read -rsp 'Hub 管理员密码：' PARADE_ADMIN_PASSWORD
 printf '\n'
 export PARADE_ADMIN_PASSWORD
 export PARADE_LANG=zh-CN
-export PARADE_VERSION=v0.1.0
+export PARADE_VERSION=v1.0.0
 export PARADE_PUBLIC_URL=https://parade.example.com
 export PARADE_RELEASE_KEY_SHA256='<可信的64位十六进制摘要>'
 sudo --preserve-env=PARADE_LANG,PARADE_VERSION,PARADE_PUBLIC_URL,PARADE_ADMIN_PASSWORD,PARADE_RELEASE_KEY_SHA256 \
@@ -170,7 +171,7 @@ curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-
 再在本机运行：
 
 ```bash
-tag=v0.1.0
+tag=v1.0.0
 release_base="https://github.com/jacek4yang/parade/releases/download/${tag}"
 curl -fLO "${release_base}/parade-uninstall.sh"
 curl -fLO "${release_base}/SHA256SUMS.release"
