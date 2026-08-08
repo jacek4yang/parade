@@ -72,13 +72,19 @@ fi
 
 build_one() {
   local target="$1"
+  local target_dir="target"
   if [ "$BUILDER" = cargo ] && [ "$target" != "$HOST_TARGET" ]; then
     echo "──▶ skipping ${target} (cross is required)"
     return 1
   fi
   echo "──▶ building parade-agent for ${target} …"
   if [ "$BUILDER" = cross ]; then
-    if ! cross build --release --locked -p parade-agent --all-features --target "$target"; then
+    # Cargo fingerprints do not account for the container's glibc version.
+    # Isolate every cross target so a host-built build script is never reused
+    # inside an older compatibility container.
+    target_dir="${PARADE_CROSS_TARGET_ROOT:-target/cross}/${target}"
+    if ! CARGO_TARGET_DIR="$target_dir" \
+      cross build --release --locked -p parade-agent --all-features --target "$target"; then
       echo "   ✗ ${target} failed (toolchain/target missing?) — skipping"
       return 1
     fi
@@ -90,7 +96,7 @@ build_one() {
       return 1
     fi
   fi
-  local src="target/${target}/release/parade-agent"
+  local src="${target_dir}/${target}/release/parade-agent"
   local dst="${DIST}/${target}/parade-agent"
   mkdir -p "${DIST}/${target}"
   cp "$src" "$dst"
