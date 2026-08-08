@@ -46,6 +46,14 @@ published.
   workspace tests green; the dedicated gate emitted its execution receipt and
   passed at 10.947 seconds / 91.3 reports per second, 1,822,720 database bytes,
   5.431 MiB per Agent per 30 days and 8,692 KiB idle Hub RSS.
+- PR #5 was merged externally as `54d743c`; merged-main CI passed. Release run
+  `31255871923` then passed every unsigned verification and all seven Agent plus
+  two static Hub cross builds. The protected signing job successfully signed
+  and reverified the exact eight assets, but publication stopped because that
+  deliberately checkout-free job did not pass an explicit repository to
+  `gh release create`. Add `--repo "${GITHUB_REPOSITORY}"` rather than checking
+  source code out into the key-bearing job. The unpublished tag was removed;
+  create it again only from the follow-up merge commit after merged-main CI.
 
 ## 2026-08-08 v1.0.0 signed Release preparation
 

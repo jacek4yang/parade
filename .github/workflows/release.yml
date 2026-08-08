@@ -264,6 +264,7 @@ jobs:
             release-staging/release/release-public.pem \
             release-staging/release/SHA256SUMS.release \
             release-staging/release/SHA256SUMS.release.sig \
+            --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --title "Parade ${GITHUB_REF_NAME}" \
             --generate-notes
