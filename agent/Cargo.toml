@@ -9,24 +9,19 @@ license.workspace = true
 # src/syscall.rs), giving the smallest possible binary, the widest kernel
 # compatibility, and zero libc dependency in the collection path.
 #
-# TLS is optional (feature "tls"):
-#   • default (no TLS): tiny binary, pure-Rust, trivial to cross-compile to any
-#     architecture — talk HTTP to the hub (typically behind nginx on the same
-#     host, or over a private network). This is the recommended setup.
-#   • --features tls: adds rustls so the agent can reach an https:// hub
-#     directly. Pulls in `ring` (C/asm), so cross-compiling then needs a C
-#     toolchain (use `cross`).
+# TLS is the safe default and is required for every non-loopback Hub. It pulls
+# in rustls/ring, so cross-architecture release builds use `cross`.
 [features]
 default = ["tls"]
 tls = ["ureq/tls"]
 
 [dependencies]
-parade-common = { path = "../common" }
+parade-common = { version = "0.1.0", path = "../common" }
 # no default features ⇒ no TLS/ring unless the `tls` feature is enabled
-ureq = { version = "2.9", default-features = false, features = ["json", "gzip"] }
+ureq = { version = "2.9", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 ed25519-dalek = "2"
 getrandom = "0.2"
-postcard = { version = "1", features = ["alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
