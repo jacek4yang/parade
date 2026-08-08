@@ -16,7 +16,7 @@ default = ["tls"]
 tls = ["ureq/tls"]
 
 [dependencies]
-parade-common = { version = "0.1.0", path = "../common" }
+parade-common = { version = "1.0.0", path = "../common" }
 # no default features ⇒ no TLS/ring unless the `tls` feature is enabled
 ureq = { version = "2.9", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }

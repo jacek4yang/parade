@@ -75,7 +75,7 @@ read -rsp 'Hub 管理员密码：' PARADE_ADMIN_PASSWORD
 printf '\n'
 export PARADE_ADMIN_PASSWORD
 export PARADE_LANG=zh-CN
-export PARADE_VERSION=v0.1.0
+export PARADE_VERSION=v1.0.0
 export PARADE_PUBLIC_URL=https://parade.example.com
 export PARADE_RELEASE_KEY_SHA256='64位十六进制摘要'
 sudo --preserve-env=PARADE_LANG,PARADE_VERSION,PARADE_PUBLIC_URL,PARADE_ADMIN_PASSWORD,PARADE_RELEASE_KEY_SHA256 \
@@ -115,6 +115,19 @@ PARADE_RELEASE_SIGNING_KEY=/secure/offline/parade-release.key \
 sha256sum "$parade_agent_stage/release-public.pem"
 ```
 
+自动标签发布时，应保留该密钥的离线备份，只把发布专用副本和通过独立渠道记录的
+指纹放入 GitHub `signed-release` Environment：
+
+```bash
+base64 -w0 /secure/offline/parade-release.key
+openssl pkey -in /secure/offline/parade-release.key -pubout \
+  | sha256sum
+```
+
+第一项输出保存为 `PARADE_RELEASE_SIGNING_KEY_B64`，不得经过聊天、日志或 Issue
+传递；64 位十六进制摘要保存为 `PARADE_RELEASE_PUBLIC_KEY_SHA256`。创建 `v1.0.0`
+前，为该 Environment 启用审批并只允许受保护标签部署。
+
 私钥不能进入 Git、Hub 配置、发行目录、日志或工单。创建 `parade-hub` 账号后，
 先审阅用户可写的暂存树，再只把公钥、分离签名、校验和与目标二进制复制到 root
 拥有且 Hub 组只读的 `/var/lib/parade-dist`，并按本地策略删除暂存目录。完整多架构
@@ -129,7 +142,7 @@ sudo chown -R root:parade-hub /var/lib/parade-dist
 sudo chmod -R u=rwX,g=rX,o= /var/lib/parade-dist
 ```
 
-自动 Release 由 `.github/workflows/release.yml` 在 `v*` 标签触发。仓库管理员需要将同一 Ed25519 私钥 PEM 的 base64 值配置为 GitHub Actions Secret `PARADE_RELEASE_SIGNING_KEY_B64`。标签必须与 Cargo workspace 版本完全一致，例如 `v0.1.0`。
+自动 Release 由 `.github/workflows/release.yml` 在 `v*` 标签触发。仓库管理员需要在受保护的 `signed-release` Environment 中配置 Ed25519 私钥 PEM 的 base64 值 `PARADE_RELEASE_SIGNING_KEY_B64`，以及通过独立可信渠道留存的公钥文件 SHA-256 值 `PARADE_RELEASE_PUBLIC_KEY_SHA256`。工作流会核对两者，拒绝被静默替换的密钥。标签必须与 Cargo workspace 版本完全一致，例如 `v1.0.0`。
 
 ## 6. 手动初始化 Hub
 

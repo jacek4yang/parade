@@ -2,6 +2,78 @@
 
 Last updated: 2026-08-08 (Asia/Shanghai)
 
+## 2026-08-08 v1.0.0 signed Release preparation
+
+Status: the local candidate is verified on
+`codex/read-only-vps-observability`. Draft PR #2 was merged externally as
+`25d8a58`; Parade did not perform the merge. The feature branch was
+fast-forwarded to that default-branch commit before preparing the release
+candidate.
+
+- The repository currently has zero Releases and zero Actions Secrets. The
+  signed workflow cannot publish until the operator creates and protects the
+  `signed-release` environment, then provisions the scoped Ed25519 key as
+  `PARADE_RELEASE_SIGNING_KEY_B64` and its independently recorded public-key
+  digest as `PARADE_RELEASE_PUBLIC_KEY_SHA256`.
+- Prepare semantic version `1.0.0` (tag `v1.0.0`) in the workspace, internal
+  path-dependency constraints, lockfile and pinned-tag documentation.
+- Run the release-proportionate Rust/frontend/browser/installer/performance/
+  dependency checks, then commit and push a new draft release-preparation PR.
+- Do not create the tag until the exact release-candidate commit is reachable
+  from `main`; do not bypass signing, publish an unsigned GitHub Release, merge
+  a PR, or generate an operator trust root without an operator-controlled
+  backup.
+- The final release review found and closed two publication-chain hazards:
+  every workflow Action is pinned to a full commit SHA at a current Node
+  24-compatible major version, and publication now compares an exact eight-file
+  asset allowlist before passing the same explicit list to `gh release create`.
+  The signing job also verifies the operator-pinned public-key digest, restores
+  and rechecks all seven Agent executable modes after the artifact round trip,
+  and runs only in `signed-release`.
+
+Release-candidate verification on 2026-08-08:
+
+- `cargo fmt --all -- --check`, strict all-feature Clippy and all 40 workspace
+  tests passed with every local crate reporting version `1.0.0`.
+- Frontend format, lint, TypeScript, five unit tests, production build and
+  `npm audit --audit-level=high` passed. Eight desktop/mobile Playwright flows
+  passed after supplying the existing user-space Chromium library path. The
+  first browser attempt failed before test execution because this host lacks
+  `libnspr4.so`; the assertions themselves did not fail.
+- Shell syntax and both installer integrity scenarios passed. ShellCheck is not
+  installed on this host and must be executed by the draft PR workflow.
+- The installer regression suite now also proves that Linux `armv7l` selects
+  the published `armv7-unknown-linux-musleabihf` target. This closed a release
+  review blocker where the prior generic triple omitted the hard-float ABI
+  suffix and could never find either published armv7 binary.
+- Both workflow YAML files passed Prettier parsing. The extracted signing block
+  passed an end-to-end disposable fixture with a one-use Ed25519 test key:
+  the inner manifest was checked before signing, both inner and outer signatures
+  and checksums verified again after extraction, all seven archived Agent files
+  retained executable mode, and an unexpected ninth asset was rejected by the
+  exact allowlist. The disposable key was never committed or uploaded and was
+  disabled after the test.
+- `cargo deny check` passed with only the already-explained duplicate-version
+  warnings. Online `cargo audit` could not refresh RustSec because the local
+  GitHub fetch failed; `cargo audit --no-fetch --stale` then scanned 1,190
+  locally cached advisories and passed. The PR workflow must repeat a fresh
+  online audit.
+- The final deterministic performance gate passed after rebuilding the Hub with
+  the corrected embedded armv7 installer: Agent 2,947,936 B, Hub 6,302,792 B,
+  conservative normal traffic 5.431 MiB/Agent/30d, 1,000 reports ingested in
+  10,541 ms (94.9 reports/s), fleet count query 1.037 ms, database 1,822,720 B,
+  and idle Hub peak 8,540 KiB RSS / 7 FD / 5
+  threads. The host used the `powersave` governor and disallowed `perf` sampling
+  with `perf_event_paranoid=3`.
+- Publication remains intentionally blocked: GitHub still reports zero Actions
+  Secrets and zero Releases, and this unmerged candidate is not yet reachable
+  from `main`. The next safe step is a reviewed draft PR, followed by operator
+  protection of the `signed-release` environment and provisioning of both
+  release secrets; only then may tag `v1.0.0` trigger the signed Release
+  workflow. Branch/tag rules and immutable Releases are also absent in current
+  GitHub repository settings and must be treated as release-governance
+  limitations rather than silently claimed protections.
+
 ## 2026-08-08 resource and bandwidth hardening
 
 Status: implementation and full pre-documentation verification are complete in

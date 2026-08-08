@@ -11,11 +11,11 @@ concurrency:
 
 jobs:
   verify-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -35,7 +35,7 @@ jobs:
             exit 1
           }
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable 2026-08-08
         with:
           targets: >-
             x86_64-unknown-linux-musl,
@@ -45,7 +45,7 @@ jobs:
             aarch64-unknown-linux-gnu,
             armv7-unknown-linux-gnueabihf,
             riscv64gc-unknown-linux-gnu
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -55,7 +55,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes shellcheck
-          cargo install cargo-audit --locked
+          cargo install cargo-audit --version 0.22.2 --locked
           cargo install cross --version 0.2.5 --locked
 
       - name: Verify frontend and build embedded assets
@@ -117,7 +117,7 @@ jobs:
           install -m 0755 scripts/parade-install.sh release-staging/release/parade-install.sh
           install -m 0755 scripts/parade-uninstall.sh release-staging/release/parade-uninstall.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unsigned-release-${{ github.sha }}
           path: release-staging
@@ -126,11 +126,12 @@ jobs:
 
   sign-publish:
     needs: verify-build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: signed-release
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unsigned-release-${{ github.sha }}
           path: release-staging
@@ -138,10 +139,15 @@ jobs:
       - name: Sign and verify release artifacts
         env:
           PARADE_RELEASE_SIGNING_KEY_B64: ${{ secrets.PARADE_RELEASE_SIGNING_KEY_B64 }}
+          PARADE_RELEASE_PUBLIC_KEY_SHA256: ${{ secrets.PARADE_RELEASE_PUBLIC_KEY_SHA256 }}
         run: |
           set -euo pipefail
           [[ -n "${PARADE_RELEASE_SIGNING_KEY_B64}" ]] || {
-            echo "repository secret PARADE_RELEASE_SIGNING_KEY_B64 is required" >&2
+            echo "signed-release environment secret PARADE_RELEASE_SIGNING_KEY_B64 is required" >&2
+            exit 1
+          }
+          [[ "${PARADE_RELEASE_PUBLIC_KEY_SHA256}" =~ ^[0-9A-Fa-f]{64}$ ]] || {
+            echo "signed-release environment secret PARADE_RELEASE_PUBLIC_KEY_SHA256 must be a SHA-256 digest" >&2
             exit 1
           }
           key_path="${RUNNER_TEMP}/parade-release-signing.pem"
@@ -157,15 +163,49 @@ jobs:
           agent_dist=release-staging/agent-dist
           release_dir=release-staging/release
           openssl pkey -in "${key_path}" -pubout -out "${agent_dist}/release-public.pem"
+          public_key_sha256=$(sha256sum "${agent_dist}/release-public.pem" | awk '{print $1}')
+          [[ "${public_key_sha256}" == "${PARADE_RELEASE_PUBLIC_KEY_SHA256,,}" ]] || {
+            echo "release public key does not match the operator-pinned SHA-256 digest" >&2
+            exit 1
+          }
+          (cd "${agent_dist}" && sha256sum --check SHA256SUMS)
           openssl pkeyutl -sign -inkey "${key_path}" -rawin \
             -in "${agent_dist}/SHA256SUMS" -out "${agent_dist}/SHA256SUMS.sig"
           test "$(stat --format='%s' "${agent_dist}/SHA256SUMS.sig")" -eq 64
           openssl pkeyutl -verify -pubin -inkey "${agent_dist}/release-public.pem" -rawin \
             -in "${agent_dist}/SHA256SUMS" -sigfile "${agent_dist}/SHA256SUMS.sig"
 
+          for target in \
+            x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl \
+            armv7-unknown-linux-musleabihf \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            armv7-unknown-linux-gnueabihf \
+            riscv64gc-unknown-linux-gnu; do
+            test -f "${agent_dist}/${target}/parade-agent"
+            chmod 0755 "${agent_dist}/${target}/parade-agent"
+          done
+
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
             --numeric-owner -C "${agent_dist}" -cf - . \
             | gzip -n >"${release_dir}/parade-agent-dist.tar.gz"
+          archive_check="${RUNNER_TEMP}/parade-agent-archive-check"
+          mkdir -p "${archive_check}"
+          tar -xzf "${release_dir}/parade-agent-dist.tar.gz" -C "${archive_check}"
+          for target in \
+            x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl \
+            armv7-unknown-linux-musleabihf \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            armv7-unknown-linux-gnueabihf \
+            riscv64gc-unknown-linux-gnu; do
+            test -x "${archive_check}/${target}/parade-agent"
+          done
+          openssl pkeyutl -verify -pubin -inkey "${archive_check}/release-public.pem" -rawin \
+            -in "${archive_check}/SHA256SUMS" -sigfile "${archive_check}/SHA256SUMS.sig"
+          (cd "${archive_check}" && sha256sum --check SHA256SUMS)
           install -m 0644 "${agent_dist}/release-public.pem" "${release_dir}/release-public.pem"
           (
             cd "${release_dir}"
@@ -187,11 +227,40 @@ jobs:
           (cd "${release_dir}" && sha256sum --check SHA256SUMS.release)
           bash -n "${release_dir}/parade-install.sh" "${release_dir}/parade-uninstall.sh"
 
+          expected_assets=(
+            parade-agent-dist.tar.gz
+            parade-hub-aarch64-unknown-linux-musl
+            parade-hub-x86_64-unknown-linux-musl
+            parade-install.sh
+            parade-uninstall.sh
+            release-public.pem
+            SHA256SUMS.release
+            SHA256SUMS.release.sig
+          )
+          mapfile -t actual_assets < <(
+            find "${release_dir}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort
+          )
+          mapfile -t expected_assets_sorted < <(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)
+          [[ "${actual_assets[*]}" == "${expected_assets_sorted[*]}" ]] || {
+            echo "release staging contains a missing or unexpected asset" >&2
+            printf 'expected: %s\n' "${expected_assets_sorted[*]}" >&2
+            printf 'actual:   %s\n' "${actual_assets[*]}" >&2
+            exit 1
+          }
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" release-staging/release/* \
+          gh release create "${GITHUB_REF_NAME}" \
+            release-staging/release/parade-agent-dist.tar.gz \
+            release-staging/release/parade-hub-aarch64-unknown-linux-musl \
+            release-staging/release/parade-hub-x86_64-unknown-linux-musl \
+            release-staging/release/parade-install.sh \
+            release-staging/release/parade-uninstall.sh \
+            release-staging/release/release-public.pem \
+            release-staging/release/SHA256SUMS.release \
+            release-staging/release/SHA256SUMS.release.sig \
             --verify-tag \
             --title "Parade ${GITHUB_REF_NAME}" \
             --generate-notes

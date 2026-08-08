@@ -56,9 +56,11 @@ curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-
 ```
 
 This command initially trusts GitHub HTTPS; only later payloads are authenticated
-by the release key. A Release workflow needs repository secret
-`PARADE_RELEASE_SIGNING_KEY_B64` and a version-matched `v*` tag on the default
-branch. It must fail rather than publish unsigned/missing architectures.
+by the release key. A Release workflow needs protected `signed-release`
+environment secrets `PARADE_RELEASE_SIGNING_KEY_B64` and
+`PARADE_RELEASE_PUBLIC_KEY_SHA256`, plus a version-matched `v*` tag on the
+default branch. It must fail rather than publish with an unsigned payload, a
+replaced signing key or missing architectures.
 
 ## 5. Build and sign from source when required
 
@@ -83,6 +85,21 @@ PARADE_RELEASE_SIGNING_KEY=/secure/offline/parade-release.key \
   scripts/build-agents.sh --dist "$parade_agent_stage"
 sha256sum "$parade_agent_stage/release-public.pem"
 ```
+
+For automatic tag releases, retain an offline backup of that key and place only
+the scoped release copy and its independently recorded fingerprint in the
+GitHub `signed-release` environment:
+
+```bash
+base64 -w0 /secure/offline/parade-release.key
+openssl pkey -in /secure/offline/parade-release.key -pubout \
+  | sha256sum
+```
+
+Store the first output as `PARADE_RELEASE_SIGNING_KEY_B64` without copying it
+through chat, logs or an issue. Store the 64-hex digest as
+`PARADE_RELEASE_PUBLIC_KEY_SHA256`, require environment approval, and restrict
+deployment to protected tags before creating `v1.0.0`.
 
 Never put the private key, administrator password, enrollment token or
 production config in Git, release staging, logs or issues. After creating the

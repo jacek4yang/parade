@@ -119,7 +119,11 @@ openssl pkeyutl -verify -pubin -inkey "$TMP_DIR/release-public.pem" -rawin \
   || die "offline release signature verification failed"
 
 RELATIVE_PATH=""
-for triple in "${ARCH}-unknown-linux-musl" "${ARCH}-unknown-linux-gnu"; do
+case "$ARCH" in
+  armv7) TARGET_CANDIDATES=(armv7-unknown-linux-musleabihf armv7-unknown-linux-gnueabihf) ;;
+  *) TARGET_CANDIDATES=("${ARCH}-unknown-linux-musl" "${ARCH}-unknown-linux-gnu") ;;
+esac
+for triple in "${TARGET_CANDIDATES[@]}"; do
   candidate="$triple/parade-agent"
   if awk -v path="$candidate" '$2 == path && $1 ~ /^[0-9a-f]{64}$/ { found=1 } END { exit !found }' "$TMP_DIR/SHA256SUMS"; then
     RELATIVE_PATH=$candidate
