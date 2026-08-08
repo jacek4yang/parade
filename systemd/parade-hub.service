@@ -2,6 +2,8 @@
 Description=Parade fleet observability Hub
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -10,6 +12,12 @@ Group=parade-hub
 ExecStart=/usr/local/bin/parade-hub /etc/parade/hub.toml
 Restart=on-failure
 RestartSec=5s
+MemoryHigh=256M
+MemoryMax=512M
+TasksMax=128
+LimitNOFILE=8192
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=500
 StateDirectory=parade
 UMask=0077
 NoNewPrivileges=yes

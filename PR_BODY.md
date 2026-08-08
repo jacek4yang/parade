@@ -1,186 +1,183 @@
 ## Summary
 
-Parade is now a self-contained, low-bandwidth, strictly read-only Linux VPS
-fleet observability and security-posture console: one Rust Hub with embedded
-SQLite/WAL and Preact assets, plus one unprivileged outbound-only Rust Agent per
-host.
+This follow-up completes Parade's bilingual, bounded-resource VPS observability
+experience while preserving the absolute read-only host boundary. It adds a
+polished English/简体中文 UI and full Chinese lifecycle documentation, five exact
+manual provider-traffic modes with visible cycle history, evidence-only
+NAT/CGNAT topology, bounded findings and storage, safe interactive installation
+and removal, isolated signed Release automation, and measured performance gates.
 
-The monitored-host boundary is structural. There is no command/script/job/
-plugin API, shell, process/service/package/firewall/user/file control, reboot,
-provider write action, or remediation path. The only Hub-to-Agent requests are
-closed, versioned, expiring observation profiles with no user command/path text.
-
-## Verified original defects
-
-The repository audit in `AUDIT.md` verified and remediated the unsafe empty
-dashboard authentication, fleet bearer identity, missing report authentication
-and replay state, resurrection through auto-registration, mutable JSON state,
-global locking, traffic resets, synchronized/high-bandwidth reporting, broken
-DynamicUser ownership, TLS build mismatch, weak artifact validation, ignored
-installer failures, proxy trust, unbounded work, and absent test/CI coverage.
+There is still no command/script/task/plugin API, remote shell, process/service/
+package/firewall/user/file control, reboot, provider write action, peer relay,
+automatic remediation, or arbitrary host path. Agents remain unprivileged,
+outbound-only, and have no listening port. Hub observation requests remain a
+closed, typed, size-bounded, expiring enum.
 
 ## Architecture and threat model
 
-- Per-Agent Ed25519 keys; 15-minute, hashed, single-use, server-bound enrollment
-  tokens; transactional credential rotation, revocation, and tombstones.
-- Signed protocol version/server/Agent/time/sequence/message/body; strict
-  content type, 256 KiB limit, freshness, identity, timestamp, replay, and
-  monotonic-checkpoint validation.
-- SQLite WAL, foreign keys, immediate security/accounting transactions, three
-  explicit migrations, indexed fleet/time queries, and bounded retention.
-- Ten-second local sampling and compact five-minute rollups with jitter,
-  backoff, one-item persistent spool, changed-only process/listener facts, and
-  no environments or full command lines.
-- Closed observation leases expire within ten minutes. Requests/cancellations
-  are audited; responses must match the exact profile/lease and have measured
-  encoded bytes.
-- Offline Ed25519 release-manifest signature, pinned public key/manifest,
-  per-binary checksum, HTTPS, actual binary self-test, static unprivileged
-  service, and root-owned Hub-read-only artifact staging.
+- One Rust Hub with embedded Preact assets and SQLite/WAL; one independent
+  Ed25519 Agent identity per Linux VPS.
+- Single-use, server-bound enrollment; signed version/server/Agent/time/
+  sequence/message reports; durable replay, rotation, revocation and tombstones.
+- Ten-second local sampling, compact five-minute+jitter rollups, bounded retry
+  and one-report spool. Raw counter state checkpoints once per minute; pending
+  reports, ACKs, identity and policy changes remain immediately durable.
+- Procfs reads, interface/process/listener/anomaly collections, queues, retention
+  passes, WAL, systemd memory/FD/task/log limits and finding series are bounded.
+- Evidence topology is only verified Agent→Hub reporting edges (maximum 24),
+  source category and shared-source counts. Raw source IPs, probes, peer mesh,
+  relay routing and distributed persistence are absent.
+- A root/kernel-compromised monitored host can falsify local telemetry; Parade
+  authenticates source identity but never claims a host is clean or safe.
 
-`THREAT_MODEL.md` covers token/key theft, compromised VPSes, replay and
-cross-server impersonation, malicious Hub users, proxy spoofing, database and
-artifact theft, telemetry poisoning, process-secret leakage, root/kernel
-compromise, Agent/report floods, and alert floods. Agent signatures establish
-source identity, not host truth.
+See `ARCHITECTURE.md` and `THREAT_MODEL.md` for the complete model.
 
 ## Manual traffic accounting
 
-Provider APIs remain out of scope. For each server the operator configures the
-IANA timezone/calendar anchor, limit, and selected/excluded interfaces, then
-enters current provider-used bytes at the displayed exact Agent checkpoint.
+Provider APIs remain out of scope. The operator stores current-cycle provider
+usage as an immutable seed at an exact Agent checkpoint; Parade adds later
+selected-interface deltas and append-only audited corrections. Automatic
+calendar rollover starts the next cycle at zero without resetting Linux
+counters, preserves history, and labels unsplittable outage intervals estimated.
 
-```text
-current cycle = immutable provider seed
-              + selected Linux bytes observed after that checkpoint
-              + append-only audited adjustments
-```
+The closed modes are:
 
-Agent totals remain monotonic across restart, reboot, reset, and Hub outage.
-The Hub creates every due monthly cycle without resetting Linux counters.
-Day-31 and DST behavior is deterministic; outage intervals that cannot be split
-exactly remain visibly estimated and can be corrected without rewriting
-history. The UI exposes seed/source/time, RX/TX additions, corrections, limit,
-projection, interface policy, confidence, and cycle boundaries.
+- inbound + outbound sum;
+- inbound only;
+- outbound only;
+- larger current direction;
+- independent inbound and outbound totals/limits.
 
-## Migration and retention
+Larger/separate modes require both directional provider seeds and reject an
+ambiguous combined value. The UI uses the configured provider timezone, shows
+the latest 24 cycles and up to 50 corrections per cycle, and never applies an
+unsaved billing-mode draft to a seed.
 
-Migration 1 establishes the independent identity/replay/session/audit/finding/
-traffic schema. Migration 2 links observation responses to leases and adds
-encoded-byte/cancellation accounting. Migration 3 persists the Agent's last
-delivered interface-policy version so policy updates allow one authenticated
-transition report, survive lost acknowledgements, and then reject stale policy
-use. Newer unknown schemas fail closed.
+## UI and Simplified Chinese
 
-There is deliberately no automatic importer from the insecure legacy JSON
-identity/month-total format. Re-enroll each Agent, wait for a reliable
-checkpoint, and seed it from the provider dashboard. See `MIGRATION.md`.
+- English/简体中文 selection on login and authenticated surfaces, persisted
+  locally; Chinese dates use `YYYY年MM月DD日 HH:mm:ss`.
+- Local-only Apple-system visual treatment, light/dark themes, comfortable/
+  compact density, visible focus, reduced motion and ~390 px navigation.
+- Fleet CPU/memory/disk/finding/traffic columns; evidence-rich overview;
+  bounded resource trends; privacy-preserving processes; listeners; findings;
+  events/audit; traffic equations, projections, history and uncertainty.
+- No external fonts, scripts, trackers, analytics or CDN at runtime.
 
-Detailed resources retain 30 days; traffic rollups 90 days; process/socket
-changes seven days plus latest; events 180 days; raw checkpoints 400 days while
-preserving seed-tied/latest checkpoints. Identity, audit, findings, tombstones,
-seeds, adjustments, and cycle history are durable.
+`README.zh-CN.md` and `docs/zh-CN/OPERATIONS.md` cover installation through
+TLS/proxy setup, multi-host enrollment, traffic seeding, backup/restore,
+rotation, upgrade, uninstall, troubleshooting and validation.
 
-## Checks executed
+## Release and installer safety
+
+- The tag workflow verifies Cargo/tag equality and default-branch reachability,
+  runs complete checks and builds every advertised Agent architecture before
+  any signing secret is available.
+- Only the isolated sign step receives `PARADE_RELEASE_SIGNING_KEY_B64`; it
+  signs manifests, verifies signatures and emits a deterministic Agent archive.
+- The Hub installer is bilingual and refuses an existing/partial install rather
+  than guessing an in-place migration. Agent rotation stages binary, unit and
+  new identity before single-use token redemption, then commits them together.
+- The release bootstrap explicitly documents that `curl | bash` initially
+  trusts GitHub HTTPS; high-assurance download/verify/review commands are in the
+  operations guide. Uninstall is local-only and preserves data unless `--purge`
+  is explicitly selected.
+
+## Migration
+
+Migration 4 adds the five billing modes, directional seeds/limits/adjustments,
+retention indexes, and bounded `security_findings.series_key`. Legacy combined
+traffic remains `sum`; duplicate legacy finding rows are merged while preserving
+first/last/occurrence history. Wire protocol version 2 is an explicit upgrade
+boundary. See `MIGRATION.md`.
+
+## Checks run locally
 
 - `cargo fmt --all -- --check` — passed.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` —
   passed.
-- `cargo test --workspace --all-features` — 22 passed, 0 failed.
-- `cargo build -p parade-agent --release --all-features` — passed.
-- Current-host `scripts/build-agents.sh --gnu-only` with a temporary Ed25519
-  key and independent `openssl pkeyutl -verify` — passed.
-- Frontend Prettier, ESLint, TypeScript, Vitest, and production Vite build —
-  passed. JS+CSS: 61.52 kB raw / 19.52 kB gzip combined.
-- Playwright Chromium desktop/mobile/authenticated/responsive/evidence/traffic
-  suite — 5 passed, 1 deliberate non-desktop visual skip.
-- Bash syntax and installer negative-integrity/order test — passed.
-- ShellCheck 0.10.0 — passed for every supplied shell file.
-- `npm audit --audit-level=high` — 0 vulnerabilities.
-- Workspace secret-pattern and monitored-host boundary scans — no candidates or
-  forbidden implementation paths found.
-- GitHub Actions run
-  [30727221592](https://github.com/jacek4yang/parade/actions/runs/30727221592) —
-  passed the full npm, Rust, Chromium E2E, installer, ShellCheck, and RustSec
-  sequence in 5m53s.
+- `cargo test --workspace --all-features` — 32 passed (Agent 7, common 3,
+  Hub 22).
+- Frontend Prettier, ESLint, TypeScript, five Vitest tests and production Vite
+  build — passed.
+- Playwright Chromium desktop/mobile/auth/evidence/traffic/Chinese suite —
+  8 passed. Twelve synthetic screenshots written, including 390 px server and
+  traffic views and an actual mocked seed POST/reload flow.
+- Bash syntax, user-space ShellCheck 0.10.0 and installer integrity test — passed.
+- `scripts/performance-gate.sh` — passed with locked normal Release binaries.
 
-`cargo-audit 0.22.2` installed successfully in an isolated prefix, but the
-RustSec advisory database fetch failed with a Git transport I/O error; a direct
-shallow clone also stalled and was interrupted after a bounded wait. That local
-attempt is not claimed as a pass; the clean GitHub Ubuntu runner subsequently
-installed `cargo-audit`, fetched the advisory database, and passed `cargo audit`.
-`cargo deny`, Gitleaks, `nginx -t`, and distro-level systemd installation tests
-were unavailable.
+The first direct Playwright attempt failed before launch because this host lacked
+`libnspr4.so`; the complete suite passed using the prepared user-space library
+path. A parallel local frontend/Hub build also once embedded the previous asset;
+the required ordered frontend-then-Hub rebuild passed. Neither is claimed as a
+product check pass. `cargo deny check` passed advisories, license, ban and source
+policy (with two reported duplicate transitive families). `cargo audit` and
+full Release targets await the new GitHub Actions run; Gitleaks, `nginx -t` and
+real distro/systemd installs remain unavailable locally.
 
 ## Measured bandwidth and load
 
-- Normal profile: 390-byte encoded body × 8,640 reports/30 days, plus 250 bytes
-  assumed request overhead/report and 2,048 bytes TLS reconnect/day =
-  **5,591,040 bytes / 5.332 MiB per Agent-month**. Detail leases and real event
-  bursts are excluded and measured separately.
-- Synthetic SQLite test: **1,000 Agents**, setup **212 ms**, ingestion
-  **9,636 ms**, **103.8 reports/s**, fleet-count query **0.888 ms**, database
-  **1,761,280 bytes**.
+- Normal profile: 390-byte body, 8,640 reports/30 days, 250 B request overhead,
+  2,048 B TLS reconnect/day, and one 3,469 B 32-process snapshot/day =
+  **5,695,110 B / 5.431 MiB per Agent-month**.
+- Release binaries: Agent **2,947,936 B**, Hub **6,302,600 B**.
+- 1,000 signed reports: setup **256 ms**, ingest **13,681 ms** (**73.1/s**),
+  fleet query **4.266 ms**, database **1,822,720 B**.
+- Idle release Hub: peak **8,612 KiB RSS**, **7 FDs**, **5 threads**, initial
+  SQLite **266,240 B**.
+- Embedded app JS+CSS: **37.59 kB gzip**; login JS: **1.14 kB gzip**.
+
+The host used `powersave` and `perf_event_paranoid=3`; these numbers are a
+regression baseline, not hardware-independent capacity claims. Live-detail and
+genuine event bursts are excluded from the normal monthly estimate and have
+separate byte accounting.
 
 ## Screenshots
 
 All data is synthetic.
 
-![Fleet desktop](docs/screenshots/fleet-desktop.png)
+![English Fleet](docs/screenshots/fleet-desktop.png)
 
-![Fleet mobile 390x844](docs/screenshots/fleet-mobile.png)
+![Simplified Chinese Fleet](docs/screenshots/fleet-zh-CN-desktop.png)
+
+![390 px Simplified Chinese Fleet](docs/screenshots/fleet-zh-CN-mobile.png)
 
 ![Server overview](docs/screenshots/server-overview-desktop.png)
 
-![Privacy-preserving process evidence](docs/screenshots/process-evidence-desktop.png)
+![390 px server overview](docs/screenshots/server-overview-mobile.png)
 
-![Network evidence](docs/screenshots/network-evidence-desktop.png)
+![Manual traffic modes and history](docs/screenshots/traffic-billing-modes-desktop.png)
 
-![Security evidence](docs/screenshots/security-evidence-desktop.png)
-
-![Manual seed confirmation](docs/screenshots/traffic-seed-preview-desktop.png)
+![390 px manual traffic modes](docs/screenshots/traffic-billing-modes-mobile.png)
 
 ## Known limitations / deferred work
 
-- Authentication/journal rules (SSH/root/sudo), OOM/kernel/filesystem/service
-  signals, clock skew, conntrack, disk I/O, package ownership, and remote
-  endpoint aggregation need additional distro fixtures and disposable-host
-  validation. Missing coverage is explicit and never treated as healthy zero.
-- Long-term synchronized charts/hourly downsampling, traffic cycle-history UI,
-  Fleet saved views/sort/columns, event filters, and finding acknowledgment/
-  suppression controls remain future work.
-- rusqlite work is currently synchronous inside async handlers; a future
-  full-stack load pass should use bounded blocking workers and measure HTTP/TLS
-  reconnect bursts and memory.
-- Alerts are in-console findings/events only. External delivery and provider
-  integrations are deliberately deferred.
-- Cross-architecture signed releases and real systemd installs require the
-  operator's offline release key and disposable Debian/Ubuntu/Alma/Rocky VPSes.
+- Authentication/journal rules, OOM/kernel/filesystem/service signals, per-core
+  and disk-I/O detail, conntrack, package ownership and remote endpoint
+  aggregation need additional distro fixtures and disposable-host validation.
+- Resource trends cover 72 retained rollups, not multi-year downsampling. Fleet
+  saved views/sort controls, event query filters, and finding acknowledgment/
+  suppression UX remain deferred.
+- Fleet-wide pressure/finding totals cover every server, but the interactive
+  attention list is still built from the bounded first 500 records. Fleet-wide
+  per-server traffic projection tables remain deferred.
+- The current UI appends adjustments only to the open cycle. Closed-cycle final
+  provider corrections and a first-class accounting-epoch transition API are
+  deferred; after seeded history, interface policies/limits remain editable but
+  timezone, anchor and billing mode intentionally cannot reinterpret history.
+- Uptime/boot metadata is sampled but not yet persisted as inventory. Process
+  socket ownership/package provenance and armv7 disk/inode capacity report
+  explicit unavailable values pending portable collectors.
+- Specialized traffic regressions now cover IPv6 selection, rename continuity,
+  32-bit wrap, exact seeds, direction formulas, rollover and replay durability;
+  bridge/member topology fixtures, concurrent HTTP ingest and broader property
+  testing remain deferred.
+- Synchronous rusqlite work uses short, rate-limited transactions; bounded
+  blocking workers need a measured HTTP/TLS reconnect-burst benchmark first.
+- Alerts remain in-console; provider integrations are intentionally absent.
+- The first signed GitHub Release is blocked on repository secret
+  `PARADE_RELEASE_SIGNING_KEY_B64`, then a matching version tag reachable from
+  the default branch. Real Debian/Ubuntu/Alma/Rocky systemd installs still need
+  disposable VPS validation.
 
-## Disposable-VPS manual validation
-
-1. Generate a unique Hub password hash on stdin; configure a loopback listener,
-   HTTPS public origin, exact proxy IP, SQLite path, artifact path, and release
-   public-key SHA-256.
-2. Generate/secure an offline Ed25519 release key and run
-   `PARADE_RELEASE_SIGNING_KEY=/secure/path scripts/build-agents.sh`.
-3. Install/start the Hub service, validate `nginx -t`, and confirm HTTPS login,
-   CSP/security headers, Secure cookie, and untrusted XFF rejection.
-4. In Settings create one disposable server and copy its complete expiring
-   enrollment command to a disposable VPS. Verify the `parade` process is
-   unprivileged, owns only `/var/lib/parade-agent`, has no listening socket, and
-   continues after reboot/network interruption.
-5. Verify Fleet freshness, coverage limitations, resources, privacy-preserving
-   processes, interfaces/listeners, evidence, events, and a ten-minute typed
-   lease including countdown, response bytes, early cancellation, and expiry.
-6. Configure a near-term test billing boundary, add a provider seed, generate
-   ordinary traffic, restart Agent and Hub, cross the boundary, and confirm the
-   seed/observed/adjustment equation, zero-seed new cycle, preserved history,
-   and explicit uncertainty for an outage spanning the boundary.
-7. Try a reused enrollment token, replayed report, wrong server identity,
-   modified signed body, oversized/wrong-content report, tombstoned server, bad
-   artifact signature, and failed re-enrollment. Each must fail closed; a prior
-   active Agent should remain installed/running after failed upgrade enrollment.
-
-This pull request must remain draft until those disposable-host checks are
-reviewed. Do not merge automatically.
+Keep this PR draft. Do not merge automatically.
