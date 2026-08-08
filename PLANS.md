@@ -9,7 +9,9 @@ merge. The `signed-release` environment now has the two scoped signing secrets,
 an exact `v1.0.0` deployment policy and a required owner review. Immutable
 Releases, an active owner-audited `v*` creation/update/deletion ruleset and
 full-SHA Actions pinning are enabled. The SSH-signed annotated `v1.0.0` tag
-points to `d05f398`, but no Release or release asset has been published.
+was recreated after PR #4 at `c087eae`, then removed again when the pre-signing
+cross-architecture gate failed. No current tag, Release or release asset is
+published.
 
 - Release run `31251524938` attempt 1 stopped before cross-compilation because
   the synthetic 1,000-Agent load gate took 31.061 seconds against its unchanged
@@ -25,6 +27,25 @@ points to `d05f398`, but no Release or release asset has been published.
   unpublished signed tag at the new merge commit, run the complete release
   workflow, approve the isolated signing job only after `verify-build`, and
   independently download and verify the exact eight immutable assets.
+- PR #4 was merged externally as `c087eae`, and merged-main CI passed. Release
+  run `31253783653` then passed the complete verification suite but stopped at
+  the seven-architecture gate: five `cross` containers reused host-built Cargo
+  build scripts from the shared target directory and could not satisfy their
+  newer glibc requirements. Use a distinct `CARGO_TARGET_DIR` for every Agent
+  and Hub cross target, as recommended by the cross-rs glibc/fingerprint
+  workaround. Keep all seven required Agent targets and both Hub targets; no
+  Release or signing step may proceed until every isolated build succeeds.
+- Draft PR #5 contains the isolated cross-target fix. Its first complete CI run
+  stopped during the ordinary workspace test because that test suite repeated
+  the dedicated 30-second synthetic performance gate and took 34.179 seconds
+  on the shared runner. Keep the 1,000-Agent correctness and database-size
+  assertions in ordinary tests, but enforce the unchanged wall-clock ceiling
+  only when `scripts/performance-gate.sh` explicitly opts in. This preserves a
+  fail-closed performance job without making the same noisy timing threshold a
+  duplicate prerequisite for reaching it. Local verification kept all 40
+  workspace tests green; the dedicated gate emitted its execution receipt and
+  passed at 10.947 seconds / 91.3 reports per second, 1,822,720 database bytes,
+  5.431 MiB per Agent per 30 days and 8,692 KiB idle Hub RSS.
 
 ## 2026-08-08 v1.0.0 signed Release preparation
 

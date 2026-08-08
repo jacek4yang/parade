@@ -81,8 +81,15 @@ printf 'dependency_feature_gate=passed\n'
 
 cargo test -p parade-agent --all-features \
   tests::default_monthly_bandwidth_is_below_target -- --nocapture
-cargo test -p parade-hub --all-features \
-  db::tests::synthetic_fleet_load_1000_agents_is_bounded -- --nocapture
+FLEET_TEST_LOG="$TMP_DIR/fleet-load-test.txt"
+PARADE_FLEET_LOAD_WALL_CLOCK_GATE=1 \
+  cargo test -p parade-hub --all-features --bin parade-hub \
+  db::tests::synthetic_fleet_load_1000_agents_is_bounded -- \
+  --exact --nocapture 2>&1 | tee "$FLEET_TEST_LOG"
+if ! grep -Fq 'PARADE_FLEET_LOAD_WALL_CLOCK_GATE=passed' "$FLEET_TEST_LOG"; then
+  printf '1,000-Agent wall-clock assertion did not execute\n' >&2
+  exit 1
+fi
 
 PASSWORD_HASH=$(printf '%s\n' 'temporary performance password' \
   | target/release/parade-hub hash-password)

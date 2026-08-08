@@ -103,17 +103,19 @@ jobs:
 
       - name: Build static Hub binaries
         run: |
-          cross build --release --locked -p parade-hub --all-features --target x86_64-unknown-linux-musl
-          cross build --release --locked -p parade-hub --all-features --target aarch64-unknown-linux-musl
+          CARGO_TARGET_DIR=target/cross-hub/x86_64-unknown-linux-musl \
+            cross build --release --locked -p parade-hub --all-features --target x86_64-unknown-linux-musl
+          CARGO_TARGET_DIR=target/cross-hub/aarch64-unknown-linux-musl \
+            cross build --release --locked -p parade-hub --all-features --target aarch64-unknown-linux-musl
 
       - name: Stage unsigned release artifacts
         run: |
           set -euo pipefail
           mkdir -p release-staging/release
           mv release-agent-dist release-staging/agent-dist
-          install -m 0755 target/x86_64-unknown-linux-musl/release/parade-hub \
+          install -m 0755 target/cross-hub/x86_64-unknown-linux-musl/x86_64-unknown-linux-musl/release/parade-hub \
             release-staging/release/parade-hub-x86_64-unknown-linux-musl
-          install -m 0755 target/aarch64-unknown-linux-musl/release/parade-hub \
+          install -m 0755 target/cross-hub/aarch64-unknown-linux-musl/aarch64-unknown-linux-musl/release/parade-hub \
             release-staging/release/parade-hub-aarch64-unknown-linux-musl
           install -m 0755 scripts/parade-install.sh release-staging/release/parade-install.sh
           install -m 0755 scripts/parade-uninstall.sh release-staging/release/parade-uninstall.sh
