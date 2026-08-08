@@ -1,5 +1,7 @@
 # Parade
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Parade is a self-hosted, low-bandwidth, strictly read-only Linux VPS fleet
 observability and security-posture console. It collects resource, network,
 privacy-preserving process, listener, coverage, event, and traffic evidence. It
@@ -68,6 +70,48 @@ Additional views: [390 px Fleet](docs/screenshots/fleet-mobile.png),
 [network evidence](docs/screenshots/network-evidence-desktop.png),
 [security evidence](docs/screenshots/security-evidence-desktop.png), and
 [server overview](docs/screenshots/server-overview-desktop.png).
+
+The interface includes English and Simplified Chinese, remembers the local
+choice, follows the browser language on first use, and renders Chinese dates as
+`YYYY年MM月DD日 HH:mm:ss`. All assets and system fonts are local; there are no
+external fonts, trackers, scripts, or CDNs.
+
+## One-line HTTPS bootstrap with signed payloads
+
+For a tagged GitHub Release, install the Hub on x86_64 or aarch64 Linux with:
+
+```bash
+curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-install.sh | sudo bash -s -- hub
+```
+
+This convenience command trusts GitHub HTTPS for the bootstrap script itself;
+the running bootstrap then authenticates every downloaded payload with the
+pinned/confirmed Ed25519 release key. It must not be described as authenticating
+itself. High-assurance operators should first download the script, verify its
+`SHA256SUMS.release` entry and signature using an independently obtained public
+key digest, review it, then execute it as documented in the Chinese operations
+guide.
+
+The installer detects Linux and CPU architecture, prompts for English or
+简体中文 through the controlling terminal, verifies the release public-key
+fingerprint, Ed25519 signature, manifest, binary checksum and Hub self-test,
+then asks only for the public origin and administrator password. For unattended
+installation, explicitly supply `PARADE_LANG`, `PARADE_PUBLIC_URL`,
+`PARADE_ADMIN_PASSWORD`, and the trusted `PARADE_RELEASE_KEY_SHA256` pin.
+
+After login, create one server record per VPS and run its unique 15-minute,
+single-use enrollment command on that exact machine. Repeat for hosts A, B, C,
+and so on; never reuse a command or credential. NAT/CGNAT Agents need no port
+mapping because every connection is outbound HTTPS. Public-IP Agents still
+open no Parade listener. A Hub behind NAT must have an operator-provided HTTPS
+origin reachable by every Agent; Parade never changes firewalls, routes, port
+forwards, VPNs, or tunnels.
+
+The Release workflow is triggered by a matching `v*` tag and requires the
+repository secret `PARADE_RELEASE_SIGNING_KEY_B64`. It publishes signed static
+Hub binaries, the multi-architecture Agent tree, checksums, and both installer
+scripts. It fails closed when the signing secret or a primary architecture is
+missing.
 
 ## Build
 
@@ -159,7 +203,13 @@ manifest. Copy the complete command to that VPS. The installer:
 7. starts a hardened outbound-only systemd service, failing if it is inactive.
 
 On upgrade, the existing Agent binary is not replaced until enrollment has
-succeeded. If enrollment fails, a previously active service is restarted.
+succeeded. Failures before token redemption restart a previously active
+service. Once redemption starts, a lost response may mean the Hub already
+revoked the old credential; Parade therefore leaves the old service stopped
+instead of performing a false rollback. Issue a fresh one-use token and rerun
+the installer. Hub and Agent may safely share a VPS: `/etc/parade` is a
+root-owned traversal directory while each component config remains readable
+only by its own service group.
 
 No per-Agent TOML editing and no fleet-wide credential are required.
 
@@ -193,6 +243,12 @@ billing may differ because of direction weighting, protocol overhead, rounding,
 private traffic, or provider policy. Parade shows the selected interfaces,
 source, timestamps, components, and uncertainty rather than hiding those gaps.
 
+The billing rule is a closed enum: inbound+outbound sum, inbound only, outbound
+only, larger direction, or separate inbound/outbound totals and limits. The
+larger-direction and separate modes require both provider directional values at
+the seed checkpoint; Parade rejects an ambiguous combined value. No custom
+formula, script, or provider code can be supplied.
+
 ## Resource expectations
 
 The normal synthetic protocol body and request/TLS assumptions are measured by
@@ -207,6 +263,35 @@ audit, findings, tombstones, manual seeds, adjustments, and cycle totals are
 durable. Raw traffic checkpoints are bounded to 400 days while preserving every
 seed checkpoint and the latest checkpoint per server.
 
+Operational deletion runs in 10,000-row transactional batches. Agent state
+keeps one pending report, at most 64 reported interfaces, 32 traffic anomalies,
+and 256 same-boot interface baselines; procfs reads are capped at 1 MiB. Normal
+raw-counter state is checkpointed at most once per minute instead of every
+ten-second sample, while boot/reset/new-counter transitions, a pending report,
+acknowledgement, identity or policy change remain immediately durable. SQLite
+auto-checkpoints WAL and limits the
+retained journal to 16 MiB. Supplied systemd units enforce Agent
+`MemoryMax=128M` and Hub `MemoryMax=512M`, bounded tasks/file descriptors,
+log-rate limits, and restart limits. Journald's total disk quota remains an
+operator-wide setting and is not silently changed.
+
+`scripts/performance-gate.sh` builds locked release binaries, records their
+hashes and machine/Git metadata, rejects reintroduced WebSocket/gzip runtime
+dependencies, runs the deterministic bandwidth and 1,000-Agent tests, and
+samples an idle release Hub on Linux. On the recorded 2026-08-08 local run the
+Agent was 2,947,936 bytes, the Hub 6,302,600 bytes, normal upload was 5.431 MiB
+per Agent per 30 days (including one 32-process snapshot daily), 1,000 signed
+reports ingested at 73.1 reports/s, and the idle Hub peaked at 8,612 KiB RSS,
+7 file descriptors and 5 threads. The host was
+using the `powersave` governor with `perf_event_paranoid=3`; these are a
+reproducible regression baseline, not hardware-independent capacity claims.
+
+Audit events, identities, tombstones, findings, traffic seeds, corrections and
+cycle history are intentionally durable low-frequency evidence, so Parade does
+not claim the SQLite file can never grow under unlimited operator actions.
+Export/backup according to policy and review durable history during long-lived
+installations.
+
 ## Backup, restore, and upgrade
 
 Use SQLite's online `.backup` command/API, or stop the Hub and copy the database
@@ -217,6 +302,19 @@ an old identity/replay database requires security review because Agents may have
 advanced beyond its cursors.
 
 ## Uninstall
+
+The Release-provided one-line uninstaller removes only local Parade components and
+preserves configuration/state by default:
+
+```bash
+curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-uninstall.sh | sudo bash -s -- agent
+curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-uninstall.sh | sudo bash -s -- hub
+```
+
+Add `--purge` only after preserving required evidence and backups. The script
+requires an explicit terminal confirmation; unattended use additionally
+requires `PARADE_CONFIRM_UNINSTALL=uninstall`. Parade can never invoke it
+remotely.
 
 On an Agent host, this local operator action removes only Parade's own service
 and private files:
@@ -272,3 +370,6 @@ npx playwright test
 Architecture, audit, threat model, operational security, migration boundary,
 and exact executed check results are in `ARCHITECTURE.md`, `AUDIT.md`,
 `THREAT_MODEL.md`, `SECURITY.md`, `MIGRATION.md`, and `PLANS.md`.
+
+The complete Simplified Chinese build-to-retirement guide is
+[docs/zh-CN/OPERATIONS.md](docs/zh-CN/OPERATIONS.md).
