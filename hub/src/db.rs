@@ -1511,10 +1511,20 @@ mod tests {
         assert_eq!(count, AGENTS as i64);
         let db_bytes = std::fs::metadata(&path).unwrap().len();
         assert!(db_bytes < 64 * 1024 * 1024, "database grew to {db_bytes}");
-        assert!(
-            ingest_elapsed < std::time::Duration::from_secs(30),
-            "synthetic ingestion took {ingest_elapsed:?}"
-        );
+        match std::env::var("PARADE_FLEET_LOAD_WALL_CLOCK_GATE") {
+            Ok(value) if value == "1" => {
+                assert!(
+                    ingest_elapsed < std::time::Duration::from_secs(30),
+                    "synthetic ingestion took {ingest_elapsed:?}"
+                );
+                eprintln!("PARADE_FLEET_LOAD_WALL_CLOCK_GATE=passed");
+            }
+            Ok(value) => {
+                panic!("PARADE_FLEET_LOAD_WALL_CLOCK_GATE must be unset or 1, got {value:?}")
+            }
+            Err(std::env::VarError::NotPresent) => {}
+            Err(error) => panic!("invalid PARADE_FLEET_LOAD_WALL_CLOCK_GATE: {error}"),
+        }
         eprintln!(
             "SYNTHETIC_FLEET agents={AGENTS} setup_ms={} ingest_ms={} reports_per_sec={:.1} fleet_count_query_ms={:.3} db_bytes={db_bytes}",
             setup_elapsed.as_millis(),

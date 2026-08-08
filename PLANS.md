@@ -35,6 +35,17 @@ published.
   and Hub cross target, as recommended by the cross-rs glibc/fingerprint
   workaround. Keep all seven required Agent targets and both Hub targets; no
   Release or signing step may proceed until every isolated build succeeds.
+- Draft PR #5 contains the isolated cross-target fix. Its first complete CI run
+  stopped during the ordinary workspace test because that test suite repeated
+  the dedicated 30-second synthetic performance gate and took 34.179 seconds
+  on the shared runner. Keep the 1,000-Agent correctness and database-size
+  assertions in ordinary tests, but enforce the unchanged wall-clock ceiling
+  only when `scripts/performance-gate.sh` explicitly opts in. This preserves a
+  fail-closed performance job without making the same noisy timing threshold a
+  duplicate prerequisite for reaching it. Local verification kept all 40
+  workspace tests green; the dedicated gate emitted its execution receipt and
+  passed at 10.947 seconds / 91.3 reports per second, 1,822,720 database bytes,
+  5.431 MiB per Agent per 30 days and 8,692 KiB idle Hub RSS.
 
 ## 2026-08-08 v1.0.0 signed Release preparation
 
