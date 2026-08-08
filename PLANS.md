@@ -2,6 +2,30 @@
 
 Last updated: 2026-08-08 (Asia/Shanghai)
 
+## 2026-08-08 v1.0.0 publication execution
+
+Status: PR #3 was merged externally as `d05f398`; Parade did not perform the
+merge. The `signed-release` environment now has the two scoped signing secrets,
+an exact `v1.0.0` deployment policy and a required owner review. Immutable
+Releases, an active owner-audited `v*` creation/update/deletion ruleset and
+full-SHA Actions pinning are enabled. The SSH-signed annotated `v1.0.0` tag
+points to `d05f398`, but no Release or release asset has been published.
+
+- Release run `31251524938` attempt 1 stopped before cross-compilation because
+  the synthetic 1,000-Agent load gate took 31.061 seconds against its unchanged
+  30-second ceiling. The same commit passed at 15.770 seconds in PR CI and
+  11.395 seconds in merged-main CI, so one complete rerun was allowed without
+  weakening the threshold.
+- Attempt 2 passed the same performance gate in 14.930 seconds, then exposed a
+  deterministic workflow defect: unlike normal CI, the Release job did not
+  build `target/debug/parade-hub` before the Playwright web server tried to run
+  it. Add the missing locked Hub build and deliver the change through a focused
+  PR; do not bypass the failed check or publish manually.
+- After that PR is merged and merged-main CI succeeds, recreate the still
+  unpublished signed tag at the new merge commit, run the complete release
+  workflow, approve the isolated signing job only after `verify-build`, and
+  independently download and verify the exact eight immutable assets.
+
 ## 2026-08-08 v1.0.0 signed Release preparation
 
 Status: the local candidate is verified on
