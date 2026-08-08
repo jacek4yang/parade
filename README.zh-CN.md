@@ -1,6 +1,12 @@
 # Parade
 
+[![CI](https://github.com/jacek4yang/parade/actions/workflows/ci.yml/badge.svg)](https://github.com/jacek4yang/parade/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/jacek4yang/parade?display_name=tag&sort=semver)](https://github.com/jacek4yang/parade/releases)
+
 [English](README.md) | [简体中文](README.zh-CN.md)
+
+第一次使用请先完成[快速上手](docs/getting-started.zh-CN.md)，接入真实主机前再
+完成[生产部署检查](docs/deployment.zh-CN.md)。
 
 Parade 是一个自托管、低带宽、严格只读的 Linux VPS 多主机状态与安全态势观察台。它可以收集、汇总、比较、解释和告警，但绝不能远程控制或修改被监测主机。
 
@@ -16,7 +22,7 @@ Parade 是一个自托管、低带宽、严格只读的 Linux VPS 多主机状�
 ```text
 浏览器 --HTTPS--> 反向代理 --> Parade Hub --> SQLite WAL
                                   ^
-                                  | 签名、压缩、低频上报
+                                  | 签名、紧凑、低频上报
                                   |
                        非特权、仅出站的 Agent
                           只读取限定的 /proc 与 /sys
@@ -55,7 +61,7 @@ GitHub Releases 页面存在版本后，在 x86_64 或 aarch64 Linux Hub 上可�
 curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-install.sh | sudo bash -s -- hub
 ```
 
-这条 `curl | bash` 命令本身信任 GitHub HTTPS；脚本开始运行后，才会使用固定或人工确认的 Ed25519 发布公钥验证后续所有制品，不能宣称脚本在执行前已自证真实性。高保障环境必须先下载脚本和 Release 清单，通过独立渠道核对公钥摘要、验证 `SHA256SUMS.release` 签名及脚本哈希、审阅脚本后再执行，完整命令见运维指南。
+这条 `curl | bash` 命令本身信任 GitHub HTTPS；脚本开始运行后，才会使用固定或人工确认的 Ed25519 发布公钥验证后续所有制品，不能宣称脚本在执行前已自证真实性。高保障环境必须先固定一个明确 Release 标签，再下载脚本和清单，通过独立渠道核对公钥摘要、验证 `SHA256SUMS.release` 签名及脚本哈希、审阅脚本，并以同一个 `PARADE_VERSION` 执行；完整命令见[生产部署指南](docs/deployment.zh-CN.md#高保障-release-验证)。
 
 安装程序会自动判断 Linux/CPU 架构，并通过控制终端选择 English 或简体中文。随后验证发布公钥摘要、Ed25519 签名、清单、二进制校验和与 Hub 自检，再询问公网地址和管理员密码。
 
@@ -97,7 +103,7 @@ NAT/CGNAT Agent 不需要端口映射，只需要能够出站访问 Hub HTTPS/44
 - SQLite WAL 自动 checkpoint，保留 journal 上限 16 MiB；
 - systemd 默认限制 Agent 内存 128 MiB、Hub 512 MiB，并限制任务数、文件描述符、日志速率和重启风暴。
 
-运行 `scripts/performance-gate.sh` 可构建锁定依赖的 Release 二进制、记录 Git/机器/二进制哈希、阻止未使用的 WebSocket/gzip 依赖回归，并执行带宽、1,000 Agent 和 Hub 空闲资源门禁。2026年08月08日本机实测：Agent 2,947,936 字节、Hub 6,302,600 字节、正常上行 5.431 MiB/Agent/30 天（已计入每天一次 32 进程快照）、1,000 份签名报告 73.1 份/秒，Hub 空闲峰值 RSS 8,612 KiB、7 个文件描述符、5 个线程。测试机为 `powersave` 且 `perf_event_paranoid=3`，这些数字是可复现的回归基线，不冒充所有硬件的容量承诺。
+运行 `scripts/performance-gate.sh` 可构建锁定依赖的 Release 二进制、记录 Git/机器/二进制哈希、阻止未使用的 WebSocket/gzip 依赖回归，并执行带宽、1,000 Agent 和 Hub 空闲资源门禁。2026年08月08日本机实测：Agent 2,947,936 字节、Hub 6,302,600 字节、保守正常上行预算 5.431 MiB/Agent/30 天（合成测试额外预留了相当于每天一份 32 进程快照的字节）、1,000 份签名报告 73.1 份/秒，Hub 空闲峰值 RSS 8,612 KiB、7 个文件描述符、5 个线程。Agent 并没有“每日快照”调度；只有稳定进程证据变化或 typed lease 请求时才发送有界进程证据，因此真实变化/事件会以不同方式增加流量。测试机为 `powersave` 且 `perf_event_paranoid=3`，这些数字是可复现的回归基线，不冒充所有硬件的容量承诺。
 
 journald 的总磁盘配额属于全机策略，安装器不会擅自修改。身份、墓碑、审计、安全发现、厂商种子、修正与周期历史是低频且有安全价值的持久证据，因此不能诚实承诺数据库在无限操作下“一个字节也不增长”；长期部署应按政策备份、导出和审查这些记录。
 
@@ -110,7 +116,24 @@ curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-
 curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-uninstall.sh | sudo bash -s -- hub
 ```
 
+这些便捷命令通过 GitHub HTTPS 信任一个 root 级脚本。高保障环境应固定明确
+Release 标签，使用已签名 `SHA256SUMS.release` 和独立可信公钥摘要验证脚本，
+审阅后再本机执行；完整命令见[生产部署](docs/deployment.zh-CN.md#本机卸载)。
+
 只有在完成证据与备份评估后才添加 `--purge`。卸载命令只能由主机本地管理员执行，Parade 不存在远程触发路径。
+
+## 文档
+
+| 指南 | English | 简体中文 |
+| --- | --- | --- |
+| 文档索引 | [English](docs/index.md) | [简体中文](docs/index.zh-CN.md) |
+| 快速上手 | [English](docs/getting-started.md) | [简体中文](docs/getting-started.zh-CN.md) |
+| 生产部署 | [English](docs/deployment.md) | [简体中文](docs/deployment.zh-CN.md) |
+| 完整生命周期 | [English](docs/operations.md) | [简体中文](docs/zh-CN/OPERATIONS.md) |
+| 厂商流量计费 | [English](docs/traffic-accounting.md) | [简体中文](docs/traffic-accounting.zh-CN.md) |
+| 资源预算 | [English](docs/resource-budgets.md) | [简体中文](docs/resource-budgets.zh-CN.md) |
+| 故障排查 | [English](docs/troubleshooting.md) | [简体中文](docs/troubleshooting.zh-CN.md) |
+| 安全策略 | [English](SECURITY.md) | [简体中文](SECURITY.zh-CN.md) |
 
 ## 从源码构建与验证
 
@@ -119,11 +142,11 @@ cd frontend
 npm ci
 npm run build
 cd ..
-cargo build --release --workspace --all-features
+cargo build --release --workspace --all-features --locked
 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
-架构、安全边界、迁移和规范以 [AGENTS.md](AGENTS.md)、[ARCHITECTURE.md](ARCHITECTURE.md)、[THREAT_MODEL.md](THREAT_MODEL.md)、[TRAFFIC_ACCOUNTING_SPEC.md](TRAFFIC_ACCOUNTING_SPEC.md)、[UI_SPEC.md](UI_SPEC.md)、[MIGRATION.md](MIGRATION.md) 和 [SECURITY.md](SECURITY.md) 为准。
+架构、安全边界、迁移和规范以 [AGENTS.md](AGENTS.md)、[ARCHITECTURE.md](ARCHITECTURE.md)、[THREAT_MODEL.md](THREAT_MODEL.md)、[TRAFFIC_ACCOUNTING_SPEC.md](TRAFFIC_ACCOUNTING_SPEC.md)、[UI_SPEC.md](UI_SPEC.md)、[MIGRATION.md](MIGRATION.md) 和 [简体中文安全策略](SECURITY.zh-CN.md) 为准。

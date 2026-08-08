@@ -1,5 +1,7 @@
 # Security policy and operations
 
+English | [简体中文](SECURITY.zh-CN.md)
+
 ## Product boundary
 
 Parade observes monitored Linux hosts. It does not remotely execute commands,
@@ -21,8 +23,10 @@ code path capable of those operations as a critical vulnerability.
 6. Build TLS-enabled Agent artifacts, stage their offline-signed `SHA256SUMS`,
    detached signature, and pinned public key, then copy the complete enrollment
    command from the authenticated UI. Tokens expire after 15 minutes and are
-   single-use. A failed re-enrollment leaves the existing binary intact and
-   restarts a previously active service.
+   single-use. The existing binary is not replaced before successful
+   enrollment. A failure before token redemption restarts a previously active
+   service; once redemption begins, the old credential may already be revoked
+   and is deliberately left stopped after an ambiguous failure.
 7. The installed Agent runs as `parade` with no capabilities and no listener.
    Optional log visibility should be granted only through a narrow read-only
    group after assessing the extra exposure.

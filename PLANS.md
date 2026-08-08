@@ -4,18 +4,20 @@ Last updated: 2026-08-08 (Asia/Shanghai)
 
 ## 2026-08-08 resource and bandwidth hardening
 
-Status: implementation complete; complete verification and new draft PR
-publication remain in progress. PR #1 was merged externally; Parade did not
-perform that merge. Work continues only on
-`codex/read-only-vps-observability`, and a new draft PR will be opened rather
-than writing to the default branch.
+Status: implementation and full pre-documentation verification are complete in
+draft PR #2. PR #1 was merged externally; Parade did not perform that merge.
+The bilingual documentation follow-up is being reviewed and will update the
+existing draft PR #2 only from `codex/read-only-vps-observability`, never by
+writing directly to the default branch.
 
 Final independent security, traffic, UI and binary reviews are complete and
 their high-risk findings are being closed before publication:
 
 - Normal mode now hashes stable process identity/evidence rather than volatile
   CPU/RSS, while typed process/socket/live leases force bounded snapshots. The
-  deterministic budget includes one realistic 32-process snapshot per day.
+  deterministic budget conservatively allocates bytes equivalent to one
+  realistic 32-process snapshot per day; the Agent itself sends process evidence
+  on stable evidence changes or typed leases rather than a daily schedule.
 - IPv4 and IPv6 default routes participate in automatic interface selection;
   missing/unselected counters are explicitly partial with surfaced anomaly
   reasons and actual selected-interface names.
@@ -71,8 +73,8 @@ their high-risk findings are being closed before publication:
 
 ## Simplified Chinese follow-up
 
-Status: implementation complete; full verification and publication refresh are
-in progress on `codex/read-only-vps-observability` after draft PR #1.
+Status: implementation and verification complete on
+`codex/read-only-vps-observability`; draft PR #2 is open and remains unmerged.
 
 - Add an explicit English / 简体中文 selector to both authenticated and login
   surfaces, persist the choice locally, honor browser language on first use,
@@ -93,6 +95,38 @@ in progress on `codex/read-only-vps-observability` after draft PR #1.
   automatic peer mesh/distributed database was deliberately not implemented:
   it conflicts with the no-Agent-listener, outbound-only, one-Hub/SQLite
   architecture and would create a new control/relay attack surface.
+
+## Bilingual documentation structure follow-up
+
+Status: implementation, local link/command checks, and independent read-only
+security re-review are complete on `codex/read-only-vps-observability`; no
+documentation blocker or important issue remains before the coherent commit,
+push and draft PR #2 refresh.
+
+- Read the documentation entry points, bilingual index, getting-started and
+  deployment structure under the operator-provided, read-only
+  `rust-reality` reference. No reference file or script is modified or run.
+- Add a paired English / Simplified Chinese documentation index and paired
+  quick-start, production deployment, traffic-accounting, resource-budget and
+  troubleshooting guides. Keep the existing Chinese full-lifecycle guide and
+  add a complete English lifecycle counterpart instead of duplicating a second
+  Chinese source of truth.
+- Make both root READMEs lead first-time operators to the shortest safe path,
+  then to production hardening and design/security evidence. Preserve the
+  release-signature trust distinction: `curl | bash` initially trusts GitHub
+  HTTPS, while downloaded payloads are verified by the pinned Ed25519 key.
+- Validate local Markdown links, review commands against the shipped installer
+  and configuration, run secret/boundary and diff checks, then have an
+  independent read-only documentation/security review before publication.
+- The review caught and closed a `releases/latest` switching race in the
+  high-assurance prose by pinning one explicit tag for every download and
+  `PARADE_VERSION`. It also aligned credential-rotation failure semantics,
+  transient password handling, ownership-marker uninstall, high-assurance
+  uninstall verification, user-writable build staging, synthetic bandwidth
+  assumptions, actual timeout/concurrency claims, locked builds and current
+  40-test/eight-browser-flow results. The final re-review found no remaining
+  blocker or important issue and independently passed local Markdown/anchor
+  checks.
 
 ### Follow-up implementation ledger
 
@@ -118,10 +152,10 @@ in progress on `codex/read-only-vps-observability` after draft PR #1.
   requires the operator-held `PARADE_RELEASE_SIGNING_KEY_B64` repository secret
   and a matching version tag; no private signing key is generated in Git.
 
-Current local checks are complete: Rust fmt/clippy and 32 workspace tests,
+Current local checks are complete: Rust fmt/clippy and 40 workspace tests,
 frontend format/lint/typecheck/five unit tests/production build, ShellCheck,
-installer integrity, seven Playwright flows plus one deliberate mobile visual
-skip, screenshots, and the deterministic performance gate all pass. A direct
+installer integrity, eight Playwright flows with no skip, screenshots, and the
+deterministic performance gate all pass. A direct
 Playwright attempt first failed before launch because local Chromium could not
 find `libnspr4.so`; it passed after using the prepared user-space library path.
 A parallel frontend/Hub build once embedded the prior asset bundle; the required
@@ -186,7 +220,7 @@ draft PR without merging it.
 | 5 | Resource/process/network collection and evidence findings | Completed vertical slice with fixture-root tests, privacy limits, interface/listener evidence, stable findings, and coverage caveats |
 | 6 | Embedded Preact UI | Completed required routes, aggregate fleet lenses, dark/light/density/mobile states, temporary lease UX, and traffic workflows |
 | 7 | Installer, artifact trust, services, proxy, CI, bandwidth/load/browser tests | Completed locally; cross-architecture release publication needs an operator-held offline signing key |
-| 8 | Diff review, commits, push, draft PR | In progress for this follow-up; local review/checks complete, commits/push/new draft PR pending |
+| 8 | Diff review, commits, push, draft PR | Completed for the implementation milestones in draft PR #2; the bilingual documentation follow-up is undergoing final review before its coherent commit/push |
 
 Independent read-heavy reviews were performed by architecture, security, and
 UI/test subagents. Their high-severity findings (interface-policy enforcement,
@@ -221,7 +255,7 @@ Only commands that actually ran are recorded as passed.
 | temporary `cargo-audit 0.22.2` install | Passed | Isolated tool build completed |
 | `cargo audit` | Blocked | RustSec fetch failed with `git operation failed: An IO error occurred when talking to the server`; direct shallow advisory-db clone made no progress and was interrupted after an additional bounded wait |
 | `cargo deny check` | Passed | advisories, licenses and sources clean; bans clean with two explicitly reported duplicate transitive families |
-| deterministic bandwidth test | Passed | 390-byte normal body plus one 3,469-byte 32-process snapshot/day; 8,640 reports/30d; 250 B/request plus 2,048 B/day TLS assumption; 5,695,110 B = 5.431 MiB/month |
+| deterministic bandwidth test | Passed | 390-byte normal body plus a conservative allocation equivalent to one 3,469-byte 32-process snapshot/day; 8,640 reports/30d; 250 B/request plus 2,048 B/day TLS assumption; 5,695,110 B = 5.431 MiB/month; no daily snapshot scheduler is claimed |
 | `scripts/performance-gate.sh` | Passed | Agent 2,947,936 B; Hub 6,302,600 B; dependency gate clean; Hub idle 8,612 KiB RSS, 7 FD, 5 threads, DB 266,240 B |
 | synthetic fleet test | Passed | 1,000 Agents; setup 256 ms; ingest 13,681 ms; 73.1 reports/s; fleet count 4.266 ms; DB 1,822,720 bytes |
 | Playwright screenshot generation | Passed | Twelve synthetic, non-sensitive English/Chinese desktop/mobile screenshots under `docs/screenshots/` |
@@ -238,21 +272,24 @@ Only commands that actually ran are recorded as passed.
 | `gh pr create --draft --base main --head codex/read-only-vps-observability ...` | Passed | Created https://github.com/jacek4yang/parade/pull/1 |
 | `gh pr view 1 ...` | Passed | PR is `OPEN`, draft, base `main`, head `codex/read-only-vps-observability`; initial CI run entered the queue |
 | GitHub Actions CI run `30727221592` | Passed | 5m53s: npm clean install/audit/format/lint/typecheck/unit/build, Rust fmt/clippy/tests/Hub build, Chromium install/E2E, shell syntax/installer test/ShellCheck, and RustSec `cargo audit` all succeeded |
+| GitHub Actions CI run `31247485992` | Passed | Draft PR #2 pre-documentation head: frontend audit/format/lint/typecheck/unit/build, Rust fmt/clippy/40 tests/performance gate/Hub build, 8 Playwright flows, installer syntax/integrity/ShellCheck, and RustSec `cargo audit` all completed successfully |
 
-Unavailable tools were not claimed as passed: `cargo-deny`, `gitleaks`,
-`sqlite3`, and `nginx`. `cargo-audit` installed in an isolated prefix, but its
-advisory database fetch was network-blocked, so no RustSec result is claimed.
-Remaining commands are `cargo audit`, an equivalent Gitleaks workspace scan,
-and `nginx -t` after installing the example on a
-disposable proxy host. CI installs and runs ShellCheck and `cargo audit` on a
-standard Ubuntu runner.
+Unavailable local tools were not claimed as passed: Gitleaks, `sqlite3`, and
+`nginx`. The equivalent workspace secret-pattern scan is clean. Local
+`cargo-audit` installed in an isolated prefix, but its advisory database fetch
+was network-blocked; GitHub Actions run `31247485992` independently completed
+RustSec `cargo audit` successfully. `nginx -t` and real service installation
+remain checks for a disposable deployment host. `cargo deny check` passed
+locally with two reported duplicate transitive families.
 
 ## Measured outcomes
 
-- Normal-profile upload estimate: **5.431 MiB per Agent per 30 days**, including
-  one realistic 32-process snapshot per day and remaining under the 10 MiB
-  target and 20 MiB hard ceiling. It excludes genuine event bursts and
-  explicit detail leases; those lease response bodies are measured separately.
+- Normal-profile upload estimate: **5.431 MiB per Agent per 30 days**, using a
+  conservative synthetic allocation equivalent to one realistic 32-process
+  snapshot per day and remaining under the 10 MiB target and 20 MiB hard
+  ceiling. The Agent has no daily snapshot scheduler; process/listener evidence
+  changes, genuine event bursts and explicit detail leases contribute according
+  to actual activity, with lease response bodies measured separately.
 - Synthetic Hub load: **1,000 signed Agent reports in 13.681 s** (**73.1/s**),
   count query **4.266 ms**, database **1,822,720 bytes**. This is deterministic local
   SQLite ingestion, not a claim about full HTTP/TLS capacity.
@@ -317,7 +354,8 @@ standard Ubuntu runner.
 - Base: `main` at externally merged PR #1 commit `1542f8b`
 - Head: `codex/read-only-vps-observability`
 - Follow-up commits: `bd9d570` telemetry/accounting, `bb40322` bilingual UI,
-  `ac58d7a` signed release/deployment
+  `ac58d7a` signed release/deployment, `2ccf7d6` delivery ledger; the bilingual
+  documentation commit is being reviewed before push
 - Draft PR body: `PR_BODY.md`
 - Previous PR: https://github.com/jacek4yang/parade/pull/1 (externally merged)
 - Current draft PR: https://github.com/jacek4yang/parade/pull/2
@@ -325,7 +363,7 @@ standard Ubuntu runner.
   disposable-host validation.
 
 GitHub Actions run
-[30727221592](https://github.com/jacek4yang/parade/actions/runs/30727221592)
-passed on the earlier merged baseline, including RustSec. Draft PR #2 is pushed;
-its new head CI run is pending and will be recorded without claiming success
-early.
+[31247485992](https://github.com/jacek4yang/parade/actions/runs/31247485992)
+passed on the draft PR #2 pre-documentation head, including the performance gate,
+browser suite, installers, ShellCheck and RustSec. A new run will be required
+after the documentation commit; it will not be claimed early.

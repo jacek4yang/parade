@@ -1,5 +1,7 @@
 # Parade 简体中文全生命周期运维指南
 
+[English](../operations.md) | 简体中文 | [文档索引](../index.zh-CN.md)
+
 本文覆盖从获取发布物到最终退役的完整流程。命令中的域名、路径和版本必须替换成你的真实值。任何步骤都不能突破 Parade 的只读边界。
 
 ## 1. 先确认安全边界
@@ -65,18 +67,28 @@ curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-
 6. 输入规范的 Hub origin 和至少 12 字符管理员密码；
 7. 运行 `parade-hub check-config` 后才安装并启动服务。
 
-非交互安装必须预先从可信渠道得到发布公钥摘要：
+自动化安装必须预先从可信渠道得到发布公钥摘要。有人值守时，无回显读取密码，
+避免将密码字面量写进 Shell 历史：
 
 ```bash
-sudo env \
-  PARADE_LANG=zh-CN \
-  PARADE_PUBLIC_URL=https://parade.example.com \
-  PARADE_ADMIN_PASSWORD='请使用密码管理器生成的长密码' \
-  PARADE_RELEASE_KEY_SHA256='64位十六进制摘要' \
+read -rsp 'Hub 管理员密码：' PARADE_ADMIN_PASSWORD
+printf '\n'
+export PARADE_ADMIN_PASSWORD
+export PARADE_LANG=zh-CN
+export PARADE_VERSION=v0.1.0
+export PARADE_PUBLIC_URL=https://parade.example.com
+export PARADE_RELEASE_KEY_SHA256='64位十六进制摘要'
+sudo --preserve-env=PARADE_LANG,PARADE_VERSION,PARADE_PUBLIC_URL,PARADE_ADMIN_PASSWORD,PARADE_RELEASE_KEY_SHA256 \
   bash parade-install.sh hub
+unset PARADE_ADMIN_PASSWORD
 ```
 
-安全要求：不要盲目信任 `curl | bash`。高保障环境应先下载脚本与 Release 资产，通过独立可信渠道核对公钥摘要，阅读脚本，再执行。Release 缺少签名 Secret 时工作流会失败，不会发布未签名替代品。
+完全无人值守时，应由隔离 runner 的 secret manager 注入
+`PARADE_ADMIN_PASSWORD` 环境变量；它仍会短暂对 root/执行账号的进程检查可见，
+结束后必须清除。安全要求：不要盲目信任 `curl | bash`。高保障环境应按照
+[生产部署指南](../deployment.zh-CN.md#高保障-release-验证)固定一个明确标签，
+通过独立可信渠道核对公钥摘要，阅读脚本，再执行。Release 缺少签名 Secret 时
+工作流会失败，不会发布未签名替代品。
 
 ## 5. 从源码构建并离线签名
 
@@ -87,7 +99,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-cargo build --release --workspace --all-features
+cargo build --release --workspace --all-features --locked
 ```
 
 必须先构建前端，再构建 Hub，否则 Hub 会嵌入旧资源。
@@ -97,12 +109,25 @@ cargo build --release --workspace --all-features
 ```bash
 umask 077
 openssl genpkey -algorithm Ed25519 -out /secure/offline/parade-release.key
+parade_agent_stage=$(mktemp -d)
 PARADE_RELEASE_SIGNING_KEY=/secure/offline/parade-release.key \
-  scripts/build-agents.sh --dist /var/lib/parade-dist
-sha256sum /var/lib/parade-dist/release-public.pem
+  scripts/build-agents.sh --dist "$parade_agent_stage"
+sha256sum "$parade_agent_stage/release-public.pem"
 ```
 
-私钥不能进入 Git、Hub 配置、发行目录、日志或工单。Hub 只配置公钥摘要；发行目录由 root 拥有，Hub 只读。
+私钥不能进入 Git、Hub 配置、发行目录、日志或工单。创建 `parade-hub` 账号后，
+先审阅用户可写的暂存树，再只把公钥、分离签名、校验和与目标二进制复制到 root
+拥有且 Hub 组只读的 `/var/lib/parade-dist`，并按本地策略删除暂存目录。完整多架构
+树需要 `cross`；没有 `cross` 时不能宣传脚本已跳过的目标。Hub 只配置公钥摘要。
+
+服务账号存在后，把已审阅暂存树复制到正式目录：
+
+```bash
+sudo install -d -o root -g parade-hub -m 0750 /var/lib/parade-dist
+sudo cp -a "$parade_agent_stage"/. /var/lib/parade-dist/
+sudo chown -R root:parade-hub /var/lib/parade-dist
+sudo chmod -R u=rwX,g=rX,o= /var/lib/parade-dist
+```
 
 自动 Release 由 `.github/workflows/release.yml` 在 `v*` 标签触发。仓库管理员需要将同一 Ed25519 私钥 PEM 的 base64 值配置为 GitHub Actions Secret `PARADE_RELEASE_SIGNING_KEY_B64`。标签必须与 Cargo workspace 版本完全一致，例如 `v0.1.0`。
 
@@ -111,7 +136,10 @@ sha256sum /var/lib/parade-dist/release-public.pem
 生成 Argon2id 密码哈希：
 
 ```bash
-printf '%s\n' '密码管理器中的长密码' | target/release/parade-hub hash-password
+read -rsp 'Hub 管理员密码：' parade_admin_password
+printf '\n'
+printf '%s\n' "$parade_admin_password" | target/release/parade-hub hash-password
+unset parade_admin_password
 ```
 
 创建专用用户与路径，复制 `config/hub.toml`，填写：
@@ -271,7 +299,12 @@ curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-
 curl -fsSL https://github.com/jacek4yang/parade/releases/latest/download/parade-uninstall.sh | sudo bash -s -- hub
 ```
 
-默认保留状态。只有已完成证据与备份评估后才添加 `--purge`。非交互卸载还必须设置 `PARADE_CONFIRM_UNINSTALL=uninstall`。Hub 退役前保留 SQLite 和审计；Agent 本地 `/var/lib/parade-agent` 是否删除取决于身份/流量调查需求。没有任何远程卸载路径。
+便捷命令通过 GitHub HTTPS 信任 root 级脚本；高保障流程应按
+[生产部署指南](../deployment.zh-CN.md#本机卸载)固定标签、验证已签名校验和并
+审阅后本机执行。默认保留状态。只有已完成证据与备份评估后才添加 `--purge`。
+非交互卸载还必须设置 `PARADE_CONFIRM_UNINSTALL=uninstall`。Hub 退役前保留
+SQLite 和审计；Agent 本地 `/var/lib/parade-agent` 是否删除取决于身份/流量调查
+需求。没有任何远程卸载路径。
 
 ## 16. 故障排查
 

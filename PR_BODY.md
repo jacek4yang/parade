@@ -68,6 +68,23 @@ unsaved billing-mode draft to a seed.
 TLS/proxy setup, multi-host enrollment, traffic seeding, backup/restore,
 rotation, upgrade, uninstall, troubleshooting and validation.
 
+## Bilingual documentation
+
+- Added paired English/简体中文 documentation indexes, getting-started,
+  production deployment, provider traffic accounting, resource-budget and
+  troubleshooting guides, following the concise entry/index/deep-reference
+  structure of the operator-provided read-only `rust-reality` reference.
+- Added a complete English build-to-retirement lifecycle counterpart to the
+  existing Chinese lifecycle manual, plus a Chinese security policy.
+- Both root READMEs now expose the same language map. Commands distinguish the
+  convenient one-line bootstrap from independently pinned, explicit-tag
+  high-assurance Release verification and do not claim `curl | bash`
+  authenticates itself.
+- Documentation preserves the product boundary: Agents remain outbound-only,
+  NAT requires no Parade ingress, topology is report evidence rather than a
+  mesh, and diagnosis never disables signature/TLS/replay checks or adds remote
+  control.
+
 ## Release and installer safety
 
 - The tag workflow verifies Cargo/tag equality and default-branch reachability,
@@ -80,8 +97,11 @@ rotation, upgrade, uninstall, troubleshooting and validation.
   new identity before single-use token redemption, then commits them together.
 - The release bootstrap explicitly documents that `curl | bash` initially
   trusts GitHub HTTPS; high-assurance download/verify/review commands are in the
-  operations guide. Uninstall is local-only and preserves data unless `--purge`
-  is explicitly selected.
+  production deployment guides and pin `PARADE_VERSION` to the same explicit
+  tag for every subsequent download. Convenience uninstall has the same GitHub
+  HTTPS trust called out; its high-assurance path pins a tag, verifies the signed
+  checksum and runs a reviewed local script. Uninstall is local-only and
+  preserves data unless `--purge` is explicitly selected.
 
 ## Migration
 
@@ -96,8 +116,8 @@ boundary. See `MIGRATION.md`.
 - `cargo fmt --all -- --check` — passed.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` —
   passed.
-- `cargo test --workspace --all-features` — 32 passed (Agent 7, common 3,
-  Hub 22).
+- `cargo test --workspace --all-features` — 40 passed (Agent 13, common 3,
+  Hub 24).
 - Frontend Prettier, ESLint, TypeScript, five Vitest tests and production Vite
   build — passed.
 - Playwright Chromium desktop/mobile/auth/evidence/traffic/Chinese suite —
@@ -111,14 +131,18 @@ The first direct Playwright attempt failed before launch because this host lacke
 path. A parallel local frontend/Hub build also once embedded the previous asset;
 the required ordered frontend-then-Hub rebuild passed. Neither is claimed as a
 product check pass. `cargo deny check` passed advisories, license, ban and source
-policy (with two reported duplicate transitive families). `cargo audit` and
-full Release targets await the new GitHub Actions run; Gitleaks, `nginx -t` and
-real distro/systemd installs remain unavailable locally.
+policy (with two reported duplicate transitive families). Local `cargo audit`
+was blocked by the advisory-database network fetch, while GitHub Actions run
+`31247485992` completed RustSec successfully on the pre-documentation head.
+The documentation-only head will rerun CI. Gitleaks, `nginx -t` and real distro/
+systemd installs remain unavailable locally; the equivalent workspace secret
+scan is clean.
 
 ## Measured bandwidth and load
 
 - Normal profile: 390-byte body, 8,640 reports/30 days, 250 B request overhead,
-  2,048 B TLS reconnect/day, and one 3,469 B 32-process snapshot/day =
+  2,048 B TLS reconnect/day, and a conservative allocation equivalent to one
+  3,469 B 32-process snapshot/day =
   **5,695,110 B / 5.431 MiB per Agent-month**.
 - Release binaries: Agent **2,947,936 B**, Hub **6,302,600 B**.
 - 1,000 signed reports: setup **256 ms**, ingest **13,681 ms** (**73.1/s**),
@@ -127,10 +151,11 @@ real distro/systemd installs remain unavailable locally.
   SQLite **266,240 B**.
 - Embedded app JS+CSS: **37.59 kB gzip**; login JS: **1.14 kB gzip**.
 
-The host used `powersave` and `perf_event_paranoid=3`; these numbers are a
-regression baseline, not hardware-independent capacity claims. Live-detail and
-genuine event bursts are excluded from the normal monthly estimate and have
-separate byte accounting.
+The Agent does not schedule a daily process snapshot; stable evidence changes
+and typed leases drive real snapshot uploads. The host used `powersave` and
+`perf_event_paranoid=3`; these numbers are a regression baseline, not hardware-
+independent capacity claims. Live-detail and genuine event bursts are excluded
+from the normal monthly estimate and have separate byte accounting.
 
 ## Screenshots
 
